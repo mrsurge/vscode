@@ -103,6 +103,15 @@ export interface IDiffEditorModel {
 	 * Modified model.
 	 */
 	modified: ITextModel;
+	/**
+	 * Optional pinned baseline for diff computation.
+	 *
+	 * When set, the diff editor can compute the diff using these models while
+	 * still rendering `original`/`modified`. This allows projecting a pinned diff
+	 * through subsequent edits of `modified`.
+	 */
+	originalBaseline?: ITextModel;
+	modifiedBaseline?: ITextModel;
 }
 
 export interface IDiffEditorViewModel extends IDisposable {

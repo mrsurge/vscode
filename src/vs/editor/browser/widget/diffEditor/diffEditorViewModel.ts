@@ -14,7 +14,7 @@ import { ISerializedLineRange, LineRange, LineRangeSet } from '../../../common/c
 import { DefaultLinesDiffComputer } from '../../../common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.js';
 import { IDocumentDiff } from '../../../common/diff/documentDiffProvider.js';
 import { MovedText } from '../../../common/diff/linesDiffComputer.js';
-import { DetailedLineRangeMapping, LineRangeMapping, RangeMapping } from '../../../common/diff/rangeMapping.js';
+import { DetailedLineRangeMapping, LineRangeMapping, lineRangeMappingFromRangeMappings, RangeMapping } from '../../../common/diff/rangeMapping.js';
 import { IDiffEditorModel, IDiffEditorViewModel } from '../../../common/editorCommon.js';
 import { ITextModel } from '../../../common/model.js';
 import { TextEditInfo } from '../../../common/model/bracketPairsTextModelPart/bracketPairsTree/beforeEditPositionMapper.js';
@@ -24,6 +24,9 @@ import { optimizeSequenceDiffs } from '../../../common/diff/defaultLinesDiffComp
 import { isDefined } from '../../../../base/common/types.js';
 import { groupAdjacentBy } from '../../../../base/common/arrays.js';
 import { softAssert } from '../../../../base/common/assert.js';
+import { Range } from '../../../common/core/range.js';
+import { ArrayText } from '../../../common/core/text/abstractText.js';
+import { lengthAdd, lengthDiffNonNegative, lengthOfRange, lengthToPosition, lengthZero, positionToLength, toLength } from '../../../common/model/bracketPairsTextModelPart/bracketPairsTree/length.js';
 
 export class DiffEditorViewModel extends Disposable implements IDiffEditorViewModel {
 	private readonly _isDiffUpToDate = observableValue<boolean>(this, false);
@@ -284,32 +287,55 @@ export class DiffEditorViewModel extends Disposable implements IDiffEditorViewMo
 				originalTextEditInfos = combineTextEditInfos(originalTextEditInfos, edits);
 			}));
 
-			let modifiedTextEditInfos: TextEditInfo[] = [];
-			store.add(model.modified.onDidChangeContent((e) => {
-				const edits = TextEditInfo.fromModelContentChanges(e.changes);
-				modifiedTextEditInfos = combineTextEditInfos(modifiedTextEditInfos, edits);
-			}));
+				let modifiedTextEditInfos: TextEditInfo[] = [];
+				store.add(model.modified.onDidChangeContent((e) => {
+					const edits = TextEditInfo.fromModelContentChanges(e.changes);
+					modifiedTextEditInfos = combineTextEditInfos(modifiedTextEditInfos, edits);
+				}));
 
-			let result = await documentDiffProvider.diffProvider.computeDiff(model.original, model.modified, {
-				ignoreTrimWhitespace: this._options.ignoreTrimWhitespace.read(reader),
-				maxComputationTimeMs: this._options.maxComputationTimeMs.read(reader),
-				computeMoves: this._options.showMoves.read(reader),
-			}, this._cancellationTokenSource.token);
+				const baselineOriginal = model.originalBaseline ?? model.original;
+				const baselineModified = model.modifiedBaseline ?? model.modified;
 
-			if (this._cancellationTokenSource.token.isCancellationRequested) {
-				return;
-			}
-			if (model.original.isDisposed() || model.modified.isDisposed()) {
-				// TODO@hediet fishy?
-				return;
-			}
-			result = normalizeDocumentDiff(result, model.original, model.modified);
-			result = applyOriginalEdits(result, originalTextEditInfos, model.original, model.modified) ?? result;
-			result = applyModifiedEdits(result, modifiedTextEditInfos, model.original, model.modified) ?? result;
+				// Pinned-baseline mode:
+				// - Compute a "git truth" diff using the baseline models.
+				// - Project that diff through subsequent edits of the live modified model.
+				//
+				// We currently support pinning the modified side only (original is expected
+				// to stay stable, e.g. HEAD).
+				const usePinnedBaseline = baselineOriginal === model.original && baselineModified !== model.modified;
 
-			transaction(tx => {
-				/** @description write diff result */
-				updateUnchangedRegions(result, tx);
+				const originalForDiff = usePinnedBaseline ? baselineOriginal : model.original;
+				const modifiedForDiff = usePinnedBaseline ? baselineModified : model.modified;
+
+				let result = await documentDiffProvider.diffProvider.computeDiff(originalForDiff, modifiedForDiff, {
+					ignoreTrimWhitespace: this._options.ignoreTrimWhitespace.read(reader),
+					maxComputationTimeMs: this._options.maxComputationTimeMs.read(reader),
+					// When projecting a pinned diff through subsequent edits we currently do not
+					// support moved-text tracking. Disable moves to avoid losing incremental updates.
+					computeMoves: usePinnedBaseline ? false : this._options.showMoves.read(reader),
+				}, this._cancellationTokenSource.token);
+
+				if (this._cancellationTokenSource.token.isCancellationRequested) {
+					return;
+				}
+				if (model.original.isDisposed() || model.modified.isDisposed()) {
+					// TODO@hediet fishy?
+					return;
+				}
+				result = normalizeDocumentDiff(result, originalForDiff, modifiedForDiff);
+
+				if (usePinnedBaseline) {
+					// Only project through edits of the live modified model. The original model
+					// is expected to remain unchanged in pinned-baseline mode.
+					result = applyModifiedEdits(result, modifiedTextEditInfos, model.original, model.modified) ?? result;
+				} else {
+					result = applyOriginalEdits(result, originalTextEditInfos, model.original, model.modified) ?? result;
+					result = applyModifiedEdits(result, modifiedTextEditInfos, model.original, model.modified) ?? result;
+				}
+
+				transaction(tx => {
+					/** @description write diff result */
+					updateUnchangedRegions(result, tx);
 
 				this._lastDiff = result;
 				const state = DiffState.fromDiffResult(result);
@@ -648,9 +674,6 @@ export const enum RevealPreference {
 }
 
 function applyOriginalEdits(diff: IDocumentDiff, textEdits: TextEditInfo[], originalTextModel: ITextModel, modifiedTextModel: ITextModel): IDocumentDiff | undefined {
-	return undefined;
-	/*
-	TODO@hediet
 	if (textEdits.length === 0) {
 		return diff;
 	}
@@ -660,9 +683,9 @@ function applyOriginalEdits(diff: IDocumentDiff, textEdits: TextEditInfo[], orig
 	if (!diff3) {
 		return undefined;
 	}
-	return flip(diff3);*/
+	return flip(diff3);
 }
-/*
+
 function flip(diff: IDocumentDiff): IDocumentDiff {
 	return {
 		changes: diff.changes.map(c => c.flip()),
@@ -671,80 +694,47 @@ function flip(diff: IDocumentDiff): IDocumentDiff {
 		quitEarly: diff.quitEarly,
 	};
 }
-*/
+
 function applyModifiedEdits(diff: IDocumentDiff, textEdits: TextEditInfo[], originalTextModel: ITextModel, modifiedTextModel: ITextModel): IDocumentDiff | undefined {
-	return undefined;
-	/*
-	TODO@hediet
 	if (textEdits.length === 0) {
 		return diff;
 	}
-	if (diff.changes.some(c => !c.innerChanges) || diff.moves.length > 0) {
-		// TODO support these cases
+
+	// Moves are rare and expensive to maintain under projection. For our pinned-diff
+	// work we can disable moves at the option layer. Until then, bail out.
+	if (diff.moves.length > 0) {
 		return undefined;
 	}
 
-	const changes = applyModifiedEditsToLineRangeMappings(diff.changes, textEdits, originalTextModel, modifiedTextModel);
+	// The original diff result may contain many char-level inner changes.
+	// For incremental projection we intentionally coarsen to line-range mappings
+	// (one inner change per hunk). A later full recompute will restore precise
+	// char-level diffs.
+	const coarseChanges = diff.changes.map(c => c.withInnerChangesFromLineRanges());
 
-	const moves = diff.moves.map(m => {
-		const newModifiedRange = applyEditToLineRange(m.lineRangeMapping.modified, textEdits);
-		return newModifiedRange ? new MovedText(
-			new SimpleLineRangeMapping(m.lineRangeMapping.original, newModifiedRange),
-			applyModifiedEditsToLineRangeMappings(m.changes, textEdits, originalTextModel, modifiedTextModel),
-		) : undefined;
-	}).filter(isDefined);
+	const changes = applyModifiedEditsToLineRangeMappings(coarseChanges, textEdits, originalTextModel, modifiedTextModel);
 
 	return {
 		identical: false,
 		quitEarly: false,
 		changes,
-		moves,
-	};*/
+		moves: [],
+	};
 }
-/*
-function applyEditToLineRange(range: LineRange, textEdits: TextEditInfo[]): LineRange | undefined {
-	let rangeStartLineNumber = range.startLineNumber;
-	let rangeEndLineNumberEx = range.endLineNumberExclusive;
 
-	for (let i = textEdits.length - 1; i >= 0; i--) {
-		const textEdit = textEdits[i];
-		const textEditStartLineNumber = lengthGetLineCount(textEdit.startOffset) + 1;
-		const textEditEndLineNumber = lengthGetLineCount(textEdit.endOffset) + 1;
-		const newLengthLineCount = lengthGetLineCount(textEdit.newLength);
-		const delta = newLengthLineCount - (textEditEndLineNumber - textEditStartLineNumber);
+function applyModifiedEditsToLineRangeMappings(changes: readonly DetailedLineRangeMapping[], textEdits: TextEditInfo[], originalTextModel: ITextModel, modifiedTextModel: ITextModel): readonly DetailedLineRangeMapping[] {
+	const diffTextEdits = changes.flatMap(c => (c.innerChanges ?? []).map(c => {
+		const len = lengthOfRange(c.modifiedRange);
+		return new TextEditInfo(
+			positionToLength(c.originalRange.getStartPosition()),
+			positionToLength(c.originalRange.getEndPosition()),
+			toLength(len.lineCount, len.columnCount),
+		);
+	}));
 
-		if (textEditEndLineNumber < rangeStartLineNumber) {
-			// the text edit is before us
-			rangeStartLineNumber += delta;
-			rangeEndLineNumberEx += delta;
-		} else if (textEditStartLineNumber > rangeEndLineNumberEx) {
-			// the text edit is after us
-			// NOOP
-		} else if (textEditStartLineNumber < rangeStartLineNumber && rangeEndLineNumberEx < textEditEndLineNumber) {
-			// the range is fully contained in the text edit
-			return undefined;
-		} else if (textEditStartLineNumber < rangeStartLineNumber && textEditEndLineNumber <= rangeEndLineNumberEx) {
-			// the text edit ends inside our range
-			rangeStartLineNumber = textEditEndLineNumber + 1;
-			rangeStartLineNumber += delta;
-			rangeEndLineNumberEx += delta;
-		} else if (rangeStartLineNumber <= textEditStartLineNumber && textEditEndLineNumber < rangeStartLineNumber) {
-			// the text edit starts inside our range
-			rangeEndLineNumberEx = textEditStartLineNumber;
-		} else {
-			rangeEndLineNumberEx += delta;
-		}
+	if (diffTextEdits.length === 0) {
+		return changes;
 	}
-
-	return new LineRange(rangeStartLineNumber, rangeEndLineNumberEx);
-}
-
-function applyModifiedEditsToLineRangeMappings(changes: readonly LineRangeMapping[], textEdits: TextEditInfo[], originalTextModel: ITextModel, modifiedTextModel: ITextModel): LineRangeMapping[] {
-	const diffTextEdits = changes.flatMap(c => c.innerChanges!.map(c => new TextEditInfo(
-		positionToLength(c.originalRange.getStartPosition()),
-		positionToLength(c.originalRange.getEndPosition()),
-		lengthOfRange(c.modifiedRange).toLength(),
-	)));
 
 	const combined = combineTextEditInfos(diffTextEdits, textEdits);
 
@@ -761,11 +751,9 @@ function applyModifiedEditsToLineRangeMappings(changes: readonly LineRangeMappin
 		);
 	});
 
-	const newChanges = lineRangeMappingFromRangeMappings(
+	return lineRangeMappingFromRangeMappings(
 		rangeMappings,
-		originalTextModel.getLinesContent(),
-		modifiedTextModel.getLinesContent(),
+		new ArrayText(originalTextModel.getLinesContent()),
+		new ArrayText(modifiedTextModel.getLinesContent()),
 	);
-	return newChanges;
 }
-*/
