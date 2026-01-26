@@ -226,6 +226,11 @@ export class DiffEditorViewModel extends Disposable implements IDiffEditorViewMo
 		};
 
 		this._register(model.modified.onDidChangeContent((e) => {
+			// TE2 pinned-baseline mode: do not try to project the diff through live edits of the
+			// modified model while drafts are active (prevents projection assertions/thrash).
+			if (model.te2FreezeProjection && model.modifiedBaseline && model.modifiedBaseline !== model.modified) {
+				return;
+			}
 			const diff = this._diff.get();
 			if (diff) {
 				const textEdits = TextEditInfo.fromModelContentChanges(e.changes);
@@ -288,10 +293,12 @@ export class DiffEditorViewModel extends Disposable implements IDiffEditorViewMo
 			}));
 
 				let modifiedTextEditInfos: TextEditInfo[] = [];
-				store.add(model.modified.onDidChangeContent((e) => {
-					const edits = TextEditInfo.fromModelContentChanges(e.changes);
-					modifiedTextEditInfos = combineTextEditInfos(modifiedTextEditInfos, edits);
-				}));
+				if (!(model.te2FreezeProjection && model.modifiedBaseline && model.modifiedBaseline !== model.modified)) {
+					store.add(model.modified.onDidChangeContent((e) => {
+						const edits = TextEditInfo.fromModelContentChanges(e.changes);
+						modifiedTextEditInfos = combineTextEditInfos(modifiedTextEditInfos, edits);
+					}));
+				}
 
 				const baselineOriginal = model.originalBaseline ?? model.original;
 				const baselineModified = model.modifiedBaseline ?? model.modified;
@@ -324,10 +331,14 @@ export class DiffEditorViewModel extends Disposable implements IDiffEditorViewMo
 				}
 				result = normalizeDocumentDiff(result, originalForDiff, modifiedForDiff);
 
+				const freezePinnedBaselineProjection = usePinnedBaseline && !!model.te2FreezeProjection;
+
 				if (usePinnedBaseline) {
 					// Only project through edits of the live modified model. The original model
 					// is expected to remain unchanged in pinned-baseline mode.
-					result = applyModifiedEdits(result, modifiedTextEditInfos, model.original, model.modified) ?? result;
+					if (!freezePinnedBaselineProjection) {
+						result = applyModifiedEdits(result, modifiedTextEditInfos, model.original, model.modified) ?? result;
+					}
 				} else {
 					result = applyOriginalEdits(result, originalTextEditInfos, model.original, model.modified) ?? result;
 					result = applyModifiedEdits(result, modifiedTextEditInfos, model.original, model.modified) ?? result;
@@ -488,7 +499,33 @@ export class UnchangedRegion {
 		minHiddenLineCount: number,
 		minContext: number,
 	): UnchangedRegion[] {
-		const inversedMappings = DetailedLineRangeMapping.inverse(changes, originalLineCount, modifiedLineCount);
+		const maxOrig = originalLineCount + 1;
+		const maxMod = modifiedLineCount + 1;
+		const safeChanges = changes.filter(c => {
+			const o = c.original;
+			const m = c.modified;
+			if (!Number.isFinite(o.startLineNumber) || !Number.isFinite(o.endLineNumberExclusive)) {
+				return false;
+			}
+			if (!Number.isFinite(m.startLineNumber) || !Number.isFinite(m.endLineNumberExclusive)) {
+				return false;
+			}
+			if (o.startLineNumber < 1 || o.endLineNumberExclusive < 1) {
+				return false;
+			}
+			if (m.startLineNumber < 1 || m.endLineNumberExclusive < 1) {
+				return false;
+			}
+			if (o.startLineNumber > o.endLineNumberExclusive || m.startLineNumber > m.endLineNumberExclusive) {
+				return false;
+			}
+			if (o.endLineNumberExclusive > maxOrig || m.endLineNumberExclusive > maxMod) {
+				return false;
+			}
+			return true;
+		});
+
+		const inversedMappings = DetailedLineRangeMapping.inverse(safeChanges, originalLineCount, modifiedLineCount);
 		const result: UnchangedRegion[] = [];
 
 		for (const mapping of inversedMappings) {
@@ -711,8 +748,12 @@ function applyModifiedEdits(diff: IDocumentDiff, textEdits: TextEditInfo[], orig
 	// (one inner change per hunk). A later full recompute will restore precise
 	// char-level diffs.
 	const coarseChanges = diff.changes.map(c => c.withInnerChangesFromLineRanges());
-
-	const changes = applyModifiedEditsToLineRangeMappings(coarseChanges, textEdits, originalTextModel, modifiedTextModel);
+	let changes: readonly DetailedLineRangeMapping[];
+	changes = applyModifiedEditsToLineRangeMappings(coarseChanges, textEdits, originalTextModel, modifiedTextModel);
+	// If projection fails, we return the previous mappings; force full recompute instead.
+	if (changes === coarseChanges) {
+		return undefined;
+	}
 
 	return {
 		identical: false,
@@ -751,9 +792,15 @@ function applyModifiedEditsToLineRangeMappings(changes: readonly DetailedLineRan
 		);
 	});
 
-	return lineRangeMappingFromRangeMappings(
-		rangeMappings,
-		new ArrayText(originalTextModel.getLinesContent()),
-		new ArrayText(modifiedTextModel.getLinesContent()),
-	);
+	try {
+		return lineRangeMappingFromRangeMappings(
+			rangeMappings,
+			new ArrayText(originalTextModel.getLinesContent()),
+			new ArrayText(modifiedTextModel.getLinesContent()),
+		);
+	} catch {
+		// Projection failed (usually due to out-of-bounds offsets after edits).
+		// Fallback to returning the previous (coarsened) mappings so we don't crash the editor.
+		return changes;
+	}
 }

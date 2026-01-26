@@ -112,6 +112,15 @@ export interface IDiffEditorModel {
 	 */
 	originalBaseline?: ITextModel;
 	modifiedBaseline?: ITextModel;
+
+	/**
+	 * TE2 extension: when true and a pinned baseline is used, the diff editor must not attempt
+	 * to project the diff through live edits of the modified model (incremental updates).
+	 *
+	 * This keeps the git diff inputs effectively pinned (e.g. HEAD ↔ disk/SSOT) while allowing
+	 * the UI to display an editable draft buffer without diff-projection thrash/assertions.
+	 */
+	te2FreezeProjection?: boolean;
 }
 
 export interface IDiffEditorViewModel extends IDisposable {

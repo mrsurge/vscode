@@ -105,6 +105,23 @@ export class EditorGutter<T extends IGutterItemInfo = IGutterItemInfo> extends D
 							continue;
 						}
 
+						const model = this._editor.getModel();
+						if (!model) {
+							continue;
+						}
+						const lineCount = model.getLineCount();
+						if (lineCount < 1) {
+							continue;
+						}
+						const startLineNumber = gutterItem.range.startLineNumber;
+						const endLineNumberExclusive = gutterItem.range.endLineNumberExclusive;
+						if (!Number.isFinite(startLineNumber) || !Number.isFinite(endLineNumberExclusive)) {
+							continue;
+						}
+						if (startLineNumber < 1 || endLineNumberExclusive < 1) {
+							continue;
+						}
+
 						unusedIds.delete(gutterItem.id);
 						let view = this.views.get(gutterItem.id);
 						if (!view) {
@@ -121,16 +138,17 @@ export class EditorGutter<T extends IGutterItemInfo = IGutterItemInfo> extends D
 							view.item.set(gutterItem, tx);
 						}
 
-						const top =
-							gutterItem.range.startLineNumber <= this._editor.getModel()!.getLineCount()
-								? this._editor.getTopForLineNumber(gutterItem.range.startLineNumber, true) - scrollTop
-								: gutterItem.range.startLineNumber > 1
-									? this._editor.getBottomForLineNumber(gutterItem.range.startLineNumber - 1, false) - scrollTop
-									: 0;
+						const safeStartLine = startLineNumber <= lineCount ? startLineNumber : lineCount;
+						const safeEndLine = (endLineNumberExclusive - 1) <= lineCount ? (endLineNumberExclusive - 1) : lineCount;
+
+						const top = startLineNumber <= lineCount
+							? this._editor.getTopForLineNumber(startLineNumber, true) - scrollTop
+							: this._editor.getBottomForLineNumber(lineCount, false) - scrollTop;
+
 						const bottom =
-							gutterItem.range.endLineNumberExclusive === 1 ?
-								Math.max(top, this._editor.getTopForLineNumber(gutterItem.range.startLineNumber, false) - scrollTop)
-								: Math.max(top, this._editor.getBottomForLineNumber(gutterItem.range.endLineNumberExclusive - 1, true) - scrollTop);
+							endLineNumberExclusive === 1
+								? Math.max(top, this._editor.getTopForLineNumber(safeStartLine, false) - scrollTop)
+								: Math.max(top, this._editor.getBottomForLineNumber(safeEndLine, true) - scrollTop);
 
 						const height = bottom - top;
 						view.domNode.style.top = `${top}px`;
