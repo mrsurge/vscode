@@ -5,7 +5,7 @@
 
 import './media/browser.css';
 import { localize } from '../../../../nls.js';
-import { $, addDisposableListener, Dimension, disposableWindowInterval, EventType, IDomPosition, isHTMLElement, registerExternalFocusChecker } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, Dimension, disposableWindowInterval, EventType, IDomPosition, registerExternalFocusChecker } from '../../../../base/browser/dom.js';
 import { renderIcon } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { RawContextKey, IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
@@ -55,6 +55,12 @@ export const CONTEXT_BROWSER_ELEMENT_SELECTION_ACTIVE = new RawContextKey<boolea
 
 // Re-export find widget context keys for use in actions
 export { CONTEXT_BROWSER_FIND_WIDGET_FOCUSED, CONTEXT_BROWSER_FIND_WIDGET_VISIBLE };
+
+/**
+ * Get the original implementation of HTMLElement focus (without window auto-focusing)
+ * before it gets overridden by the workbench.
+ */
+const originalHtmlElementFocus = HTMLElement.prototype.focus;
 
 class BrowserNavigationBar extends Disposable {
 	private readonly _urlInput: HTMLInputElement;
@@ -360,9 +366,7 @@ export class BrowserEditor extends EditorPane {
 			// but focus is removed from the workbench.
 			if (focused) {
 				this._onDidFocus?.fire();
-				if (isHTMLElement(this.window.document.activeElement)) {
-					this.window.document.activeElement.blur();
-				}
+				this.ensureBrowserFocus();
 			}
 		}));
 
@@ -409,6 +413,13 @@ export class BrowserEditor extends EditorPane {
 	protected override setEditorVisible(visible: boolean): void {
 		this._editorVisible = visible;
 		this.updateVisibility();
+	}
+
+	/**
+	 * Make the browser container the active element without moving focus from the browser view.
+	 */
+	private ensureBrowserFocus(): void {
+		originalHtmlElementFocus.call(this._browserContainer);
 	}
 
 	private updateVisibility(): void {
@@ -526,6 +537,7 @@ export class BrowserEditor extends EditorPane {
 				url = 'http://' + url;
 			}
 
+			this.ensureBrowserFocus();
 			await this._model.loadURL(url);
 		}
 	}
@@ -607,6 +619,9 @@ export class BrowserEditor extends EditorPane {
 			if (!resourceUri) {
 				throw new Error('No resource URI found');
 			}
+
+			// Make the browser the focused view
+			this.ensureBrowserFocus();
 
 			// Create a locator - for integrated browser, use the URI scheme to identify
 			// Browser view URIs have a special scheme we can match against
