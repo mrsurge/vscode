@@ -13,6 +13,24 @@ import { URI } from '../../../base/common/uri.js';
 import { localize } from '../../../nls.js';
 import { IMarker, IMarkerData, IMarkerReadOptions, IMarkerService, IResourceMarker, MarkerSeverity, MarkerStatistics } from './markers.js';
 
+type Te2RpcHandler = (params: unknown) => unknown | Promise<unknown>;
+
+function getTe2Globals(): any {
+	return globalThis as any;
+}
+
+function tryTe2Emit(type: string, payload: unknown): void {
+	const g = getTe2Globals();
+	const emit = g.__te2_emit;
+	if (typeof emit === 'function') {
+		try {
+			emit(type, payload);
+		} catch {
+			// ignore
+		}
+	}
+}
+
 export const unsupportedSchemas = new Set([
 	Schemas.inMemory,
 	Schemas.vscodeSourceControl,
@@ -160,8 +178,118 @@ export class MarkerService implements IMarkerService {
 	private readonly _data = new DoubleResourceMap<IMarker[]>();
 	private readonly _stats = new MarkerStats(this);
 	private readonly _filteredResources = new ResourceMap<string[]>();
+	private __te2MarkerSub: IDisposable | undefined;
+
+	constructor() {
+		const g = getTe2Globals();
+		if (!g.__te2_markerServiceBound) {
+			g.__te2_markerServiceBound = true;
+
+			// Cache: Map<string, object[]> keyed by resource.toString()
+			if (!g.__te2_markerCache) {
+				g.__te2_markerCache = new Map<string, unknown[]>();
+			}
+
+			const serializeMarker = (m: IMarker) => ({
+				uri: m.resource.toString(),
+				owner: m.owner,
+				severity: m.severity,
+				message: m.message,
+				code: typeof m.code === 'string' ? m.code : (m.code ? m.code.value : undefined),
+				source: m.source,
+				startLine: m.startLineNumber,
+				startCol: m.startColumn,
+				endLine: m.endLineNumber,
+				endCol: m.endColumn,
+			});
+
+			const updateCacheFor = (resources: readonly URI[]) => {
+				for (const r of resources) {
+					try {
+						const markers = this.read({ resource: r, ignoreResourceFilters: true });
+						g.__te2_markerCache.set(r.toString(), markers.map(serializeMarker));
+					} catch {
+						// ignore
+					}
+				}
+			};
+
+			// Keep cache warm + emit resource keys only.
+			this.__te2MarkerSub = this.onMarkerChanged((resources) => {
+				updateCacheFor(resources);
+				tryTe2Emit('diagnostics/changed', { resources: resources.map(r => r.toString()) });
+			});
+
+			// Provide snapshot getter for /te2/snapshot.
+			const registerSnapshotGetter = () => {
+				const setGetter = g.__te2_setSnapshotGetter;
+				if (typeof setGetter !== 'function') {
+					return;
+				}
+				setGetter(() => {
+					const diagnosticsByUri: Record<string, unknown[]> = Object.create(null);
+					for (const [uri, items] of g.__te2_markerCache.entries()) {
+						diagnosticsByUri[uri] = items;
+					}
+					return { markers: { diagnosticsByUri }, extHost: {} };
+				});
+			};
+
+			// Provide /te2/rpc handler for diagnostics/get.
+			const registerRpcHandlers = () => {
+				if (!(g.__te2_rpcHandlers instanceof Map)) {
+					return;
+				}
+				const handlers = g.__te2_rpcHandlers as Map<string, Te2RpcHandler>;
+				handlers.set('diagnostics/get', async (params: any) => {
+					const resourcesRaw: unknown = params?.resources;
+					const resources: string[] = Array.isArray(resourcesRaw) ? resourcesRaw.filter((x) => typeof x === 'string') : [];
+					const diagnosticsByUri: Record<string, unknown[]> = Object.create(null);
+
+					for (const uriStr of resources) {
+						let uri: URI | undefined;
+						try {
+							uri = URI.parse(uriStr);
+						} catch {
+							uri = undefined;
+						}
+						if (!uri) {
+							diagnosticsByUri[uriStr] = [];
+							continue;
+						}
+
+						try {
+							const markers = this.read({ resource: uri, ignoreResourceFilters: true });
+							const serialized = markers.map(serializeMarker);
+							diagnosticsByUri[uri.toString()] = serialized;
+							g.__te2_markerCache.set(uri.toString(), serialized);
+						} catch {
+							diagnosticsByUri[uri.toString()] = [];
+						}
+					}
+
+					return { diagnosticsByUri };
+				});
+			};
+
+			// If the TE2 bus isn't initialized yet, defer registration until it is.
+			if (typeof g.__te2_setSnapshotGetter !== 'function' || !(g.__te2_rpcHandlers instanceof Map)) {
+				if (!Array.isArray(g.__te2_deferredInit)) {
+					g.__te2_deferredInit = [];
+				}
+				g.__te2_deferredInit.push(() => {
+					registerSnapshotGetter();
+					registerRpcHandlers();
+				});
+			} else {
+				registerSnapshotGetter();
+				registerRpcHandlers();
+			}
+		}
+	}
 
 	dispose(): void {
+		this.__te2MarkerSub?.dispose();
 		this._stats.dispose();
 		this._onMarkerChanged.dispose();
 	}
