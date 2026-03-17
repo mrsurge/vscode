@@ -98,12 +98,123 @@ export class ContentHoverWidget extends ResizableContentWidget {
 		}));
 		this._setRenderedHover(undefined);
 		this._editor.addContentWidget(this);
+		this._initTouchDrag();
+		this._initTouchScroll();
 	}
 
 	public override dispose(): void {
 		super.dispose();
 		this._renderedHover?.dispose();
 		this._editor.removeContentWidget(this);
+	}
+
+	private _initTouchDrag(): void {
+		const domNode = this._resizableNode.domNode;
+		let dragState: { startTouchX: number; startTouchY: number; startLeft: number; startTop: number; moved: boolean } | null = null;
+		const onTouchStart = (e: TouchEvent) => {
+			if (!this.isVisible || this._isResizing) {
+				return;
+			}
+			if (e.touches.length !== 1) {
+				return;
+			}
+			const target = e.target as HTMLElement;
+			if (!target.closest('.status-bar, .monaco-sash')) {
+				return;
+			}
+			if (target.closest('a, button, input, textarea, select, [contenteditable]')) {
+				return;
+			}
+			const touch = e.touches[0];
+			const rect = domNode.getBoundingClientRect();
+			dragState = {
+				startTouchX: touch.clientX,
+				startTouchY: touch.clientY,
+				startLeft: rect.left,
+				startTop: rect.top,
+				moved: false
+			};
+		};
+		const onTouchMove = (e: TouchEvent) => {
+			if (!dragState || e.touches.length !== 1) {
+				return;
+			}
+			const touch = e.touches[0];
+			const dx = touch.clientX - dragState.startTouchX;
+			const dy = touch.clientY - dragState.startTouchY;
+			if (!dragState.moved && Math.abs(dx) < 6 && Math.abs(dy) < 6) {
+				return;
+			}
+			dragState.moved = true;
+			e.preventDefault();
+			e.stopPropagation();
+			const editorDomNode = this._editor.getDomNode();
+			if (!editorDomNode) {
+				return;
+			}
+			const editorRect = editorDomNode.getBoundingClientRect();
+			const widgetW = domNode.offsetWidth;
+			const widgetH = domNode.offsetHeight;
+			let newLeft = dragState.startLeft + dx;
+			let newTop = dragState.startTop + dy;
+			newLeft = Math.max(editorRect.left, Math.min(newLeft, editorRect.right - widgetW));
+			newTop = Math.max(editorRect.top, Math.min(newTop, editorRect.bottom - widgetH));
+			domNode.style.position = 'fixed';
+			domNode.style.left = newLeft + 'px';
+			domNode.style.top = newTop + 'px';
+		};
+		const onTouchEnd = () => {
+			dragState = null;
+		};
+		domNode.addEventListener('touchstart', onTouchStart, { passive: true });
+		domNode.addEventListener('touchmove', onTouchMove, { passive: false });
+		domNode.addEventListener('touchend', onTouchEnd, { passive: true });
+		domNode.addEventListener('touchcancel', onTouchEnd, { passive: true });
+	}
+
+	private _initTouchScroll(): void {
+		const scrollbar = this._hover.scrollbar;
+		const contentNode = this._hover.contentsDomNode;
+		let scrollState: { startTouchX: number; startTouchY: number; startScrollTop: number; startScrollLeft: number; moved: boolean } | null = null;
+		contentNode.addEventListener('touchstart', (e: TouchEvent) => {
+			if (!this.isVisible || e.touches.length !== 1) {
+				return;
+			}
+			const target = e.target as HTMLElement;
+			if (target.closest('.status-bar, .monaco-sash, a, button, input, textarea, select, [contenteditable]')) {
+				return;
+			}
+			const touch = e.touches[0];
+			const pos = scrollbar.getScrollPosition();
+			scrollState = {
+				startTouchX: touch.clientX,
+				startTouchY: touch.clientY,
+				startScrollTop: pos.scrollTop,
+				startScrollLeft: pos.scrollLeft,
+				moved: false
+			};
+		}, { passive: true });
+		contentNode.addEventListener('touchmove', (e: TouchEvent) => {
+			if (!scrollState || e.touches.length !== 1) {
+				return;
+			}
+			const touch = e.touches[0];
+			const dx = scrollState.startTouchX - touch.clientX;
+			const dy = scrollState.startTouchY - touch.clientY;
+			if (!scrollState.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) {
+				return;
+			}
+			scrollState.moved = true;
+			e.preventDefault();
+			e.stopPropagation();
+			scrollbar.setScrollPosition({
+				scrollTop: scrollState.startScrollTop + dy,
+				scrollLeft: scrollState.startScrollLeft + dx
+			});
+		}, { passive: false });
+		const onEnd = () => { scrollState = null; };
+		contentNode.addEventListener('touchend', onEnd, { passive: true });
+		contentNode.addEventListener('touchcancel', onEnd, { passive: true });
 	}
 
 	public getId(): string {
@@ -227,9 +338,10 @@ export class ContentHoverWidget extends ResizableContentWidget {
 		);
 
 		if (overflowing || this._hover.containerDomNode.clientWidth < initialWidth) {
-			const bodyBoxWidth = dom.getClientArea(this._hover.containerDomNode.ownerDocument.body).width;
+			const layoutInfo = this._editor.getLayoutInfo();
+			const editorWidth = layoutInfo.width - layoutInfo.minimapWidth;
 			const horizontalPadding = 14;
-			return bodyBoxWidth - horizontalPadding;
+			return editorWidth - horizontalPadding;
 		} else {
 			return this._hover.containerDomNode.clientWidth;
 		}
@@ -305,8 +417,10 @@ export class ContentHoverWidget extends ResizableContentWidget {
 	}
 
 	private _updateMaxDimensions() {
-		const height = Math.max(this._editor.getLayoutInfo().height / 4, 250, ContentHoverWidget._lastDimensions.height);
-		const width = Math.max(this._editor.getLayoutInfo().width * 0.66, 750, ContentHoverWidget._lastDimensions.width);
+		const layoutInfo = this._editor.getLayoutInfo();
+		const availableWidth = layoutInfo.width - layoutInfo.minimapWidth;
+		const height = Math.max(layoutInfo.height / 4, 250, ContentHoverWidget._lastDimensions.height);
+		const width = Math.max(availableWidth * 0.66, 750, ContentHoverWidget._lastDimensions.width);
 		this._resizableNode.maxSize = new dom.Dimension(width, height);
 		this._setHoverWidgetMaxDimensions(width, height);
 	}

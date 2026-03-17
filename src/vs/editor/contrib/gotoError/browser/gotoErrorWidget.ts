@@ -34,8 +34,10 @@ class MessageWidget {
 
 	private _lines: number = 0;
 	private _longestLineLength: number = 0;
+	private _measuredLines: number = 0;
 
 	private readonly _editor: ICodeEditor;
+	private readonly _domNode: HTMLDivElement;
 	private readonly _messageBlock: HTMLDivElement;
 	private readonly _relatedBlock: HTMLDivElement;
 	private readonly _scrollable: ScrollableElement;
@@ -55,6 +57,7 @@ class MessageWidget {
 
 		const domNode = document.createElement('div');
 		domNode.className = 'descriptioncontainer';
+		this._domNode = domNode;
 
 		this._messageBlock = document.createElement('div');
 		this._messageBlock.classList.add('message');
@@ -192,10 +195,23 @@ class MessageWidget {
 		this._scrollable.getDomNode().style.height = `${height}px`;
 		this._scrollable.getDomNode().style.width = `${width}px`;
 		this._scrollable.setScrollDimensions({ width, height });
+		// Constrain descriptioncontainer width so text wraps within bounds
+		this._domNode.style.width = `${width}px`;
+		// Measure actual content height after wrapping
+		const fontInfo = this._editor.getOption(EditorOption.fontInfo);
+		const actualHeight = this._domNode.scrollHeight;
+		if (actualHeight > 0 && fontInfo.lineHeight > 0) {
+			this._measuredLines = Math.ceil(actualHeight / fontInfo.lineHeight);
+			this._scrollable.setScrollDimensions({
+				scrollWidth: width,
+				scrollHeight: actualHeight
+			});
+		}
 	}
 
 	getHeightInLines(): number {
-		return Math.min(17, this._lines);
+		const lines = this._measuredLines > 0 ? Math.max(this._lines, this._measuredLines) : this._lines;
+		return Math.min(17, lines);
 	}
 
 	private getAriaLabel(marker: IMarker): string {
@@ -236,6 +252,7 @@ export class MarkerNavigationWidget extends PeekViewWidget {
 	private readonly _callOnDispose = new DisposableStore();
 	private _severity: MarkerSeverity;
 	private _backgroundColor?: Color;
+	private _relayoutScheduled: boolean = false;
 	private readonly _onDidSelectRelatedInformation = new Emitter<IRelatedInformation>();
 	private _heightInPixel!: number;
 
@@ -375,12 +392,27 @@ export class MarkerNavigationWidget extends PeekViewWidget {
 	protected override _doLayoutBody(heightInPixel: number, widthInPixel: number): void {
 		super._doLayoutBody(heightInPixel, widthInPixel);
 		this._heightInPixel = heightInPixel;
-		this._message.layout(heightInPixel, widthInPixel);
+		const effectiveWidth = widthInPixel - this.editor.getLayoutInfo().minimapWidth;
+		this._message.layout(heightInPixel, effectiveWidth);
 		this._container.style.height = `${heightInPixel}px`;
+		// After layout/measure, check if wrapping requires more height
+		if (!this._relayoutScheduled) {
+			const fontInfo = this.editor.getOption(EditorOption.fontInfo);
+			const currentLines = Math.floor(heightInPixel / fontInfo.lineHeight);
+			const neededLines = this._message.getHeightInLines();
+			if (neededLines > currentLines) {
+				this._relayoutScheduled = true;
+				queueMicrotask(() => {
+					this._relayoutScheduled = false;
+					this._relayout();
+				});
+			}
+		}
 	}
 
 	protected override _onWidth(widthInPixel: number): void {
-		this._message.layout(this._heightInPixel, widthInPixel);
+		const effectiveWidth = widthInPixel - this.editor.getLayoutInfo().minimapWidth;
+		this._message.layout(this._heightInPixel, effectiveWidth);
 	}
 
 	protected override _relayout(): void {
