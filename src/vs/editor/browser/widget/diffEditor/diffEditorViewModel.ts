@@ -226,23 +226,29 @@ export class DiffEditorViewModel extends Disposable implements IDiffEditorViewMo
 		};
 
 		this._register(model.modified.onDidChangeContent((e) => {
+			const freezePinnedMode = !model.te2AutosaveMode && !!model.te2FreezeProjection && !!model.modifiedBaseline && model.modifiedBaseline !== model.modified;
 			// TE2 pinned-baseline mode: do not try to project the diff through live edits of the
 			// modified model while drafts are active (prevents projection assertions/thrash).
-			if (model.te2FreezeProjection && model.modifiedBaseline && model.modifiedBaseline !== model.modified) {
+			if (freezePinnedMode) {
 				return;
 			}
 			const diff = this._diff.get();
 			if (diff) {
 				const textEdits = TextEditInfo.fromModelContentChanges(e.changes);
-				const result = applyModifiedEdits(this._lastDiff!, textEdits, model.original, model.modified);
-				if (result) {
-					this._lastDiff = result;
-					transaction(tx => {
-						this._diff.set(DiffState.fromDiffResult(this._lastDiff!), tx);
-						updateUnchangedRegions(result, tx);
-						const currentSyncedMovedText = this.movedTextToCompare.get();
-						this.movedTextToCompare.set(currentSyncedMovedText ? this._lastDiff!.moves.find(m => m.lineRangeMapping.modified.intersect(currentSyncedMovedText.lineRangeMapping.modified)) : undefined, tx);
-					});
+				try {
+					const result = applyModifiedEdits(this._lastDiff!, textEdits, model.original, model.modified);
+					if (result) {
+						this._lastDiff = result;
+						transaction(tx => {
+							this._diff.set(DiffState.fromDiffResult(this._lastDiff!), tx);
+							updateUnchangedRegions(result, tx);
+							const currentSyncedMovedText = this.movedTextToCompare.get();
+							this.movedTextToCompare.set(currentSyncedMovedText ? this._lastDiff!.moves.find(m => m.lineRangeMapping.modified.intersect(currentSyncedMovedText.lineRangeMapping.modified)) : undefined, tx);
+						});
+					}
+				} catch (_projectionErr) {
+					// Incremental projection failed (e.g. trailing-line invariant at EOF).
+					// Fall back to full debounced recompute — same recovery as original-side edits.
 				}
 			}
 
@@ -250,18 +256,30 @@ export class DiffEditorViewModel extends Disposable implements IDiffEditorViewMo
 			debouncer.schedule();
 		}));
 		this._register(model.original.onDidChangeContent((e) => {
+			const freezePinnedMode = !model.te2AutosaveMode && !!model.te2FreezeProjection && !!model.modifiedBaseline && model.modifiedBaseline !== model.modified;
+			if (freezePinnedMode) {
+				// Freeze mode: skip incremental projection and let full debounced recompute run.
+				this._isDiffUpToDate.set(false, undefined);
+				debouncer.schedule();
+				return;
+			}
 			const diff = this._diff.get();
 			if (diff) {
 				const textEdits = TextEditInfo.fromModelContentChanges(e.changes);
-				const result = applyOriginalEdits(this._lastDiff!, textEdits, model.original, model.modified);
-				if (result) {
-					this._lastDiff = result;
-					transaction(tx => {
-						this._diff.set(DiffState.fromDiffResult(this._lastDiff!), tx);
-						updateUnchangedRegions(result, tx);
-						const currentSyncedMovedText = this.movedTextToCompare.get();
-						this.movedTextToCompare.set(currentSyncedMovedText ? this._lastDiff!.moves.find(m => m.lineRangeMapping.modified.intersect(currentSyncedMovedText.lineRangeMapping.modified)) : undefined, tx);
-					});
+				try {
+					const result = applyOriginalEdits(this._lastDiff!, textEdits, model.original, model.modified);
+					if (result) {
+						this._lastDiff = result;
+						transaction(tx => {
+							this._diff.set(DiffState.fromDiffResult(this._lastDiff!), tx);
+							updateUnchangedRegions(result, tx);
+							const currentSyncedMovedText = this.movedTextToCompare.get();
+							this.movedTextToCompare.set(currentSyncedMovedText ? this._lastDiff!.moves.find(m => m.lineRangeMapping.modified.intersect(currentSyncedMovedText.lineRangeMapping.modified)) : undefined, tx);
+						});
+					}
+				} catch (_projectionErr) {
+					// Incremental projection failed (e.g. trailing-line invariant at EOF).
+					// Fall back to full debounced recompute.
 				}
 			}
 
@@ -292,61 +310,68 @@ export class DiffEditorViewModel extends Disposable implements IDiffEditorViewMo
 				originalTextEditInfos = combineTextEditInfos(originalTextEditInfos, edits);
 			}));
 
-				let modifiedTextEditInfos: TextEditInfo[] = [];
-				if (!(model.te2FreezeProjection && model.modifiedBaseline && model.modifiedBaseline !== model.modified)) {
-					store.add(model.modified.onDidChangeContent((e) => {
-						const edits = TextEditInfo.fromModelContentChanges(e.changes);
-						modifiedTextEditInfos = combineTextEditInfos(modifiedTextEditInfos, edits);
-					}));
-				}
+			let modifiedTextEditInfos: TextEditInfo[] = [];
+			const freezePinnedMode = !model.te2AutosaveMode && !!model.te2FreezeProjection && !!model.modifiedBaseline && model.modifiedBaseline !== model.modified;
+			if (!freezePinnedMode) {
+				store.add(model.modified.onDidChangeContent((e) => {
+					const edits = TextEditInfo.fromModelContentChanges(e.changes);
+					modifiedTextEditInfos = combineTextEditInfos(modifiedTextEditInfos, edits);
+				}));
+			}
 
-				const baselineOriginal = model.originalBaseline ?? model.original;
-				const baselineModified = model.modifiedBaseline ?? model.modified;
+			const baselineOriginal = model.te2AutosaveMode ? model.original : (model.originalBaseline ?? model.original);
+			const baselineModified = model.te2AutosaveMode ? model.modified : (model.modifiedBaseline ?? model.modified);
 
-				// Pinned-baseline mode:
-				// - Compute a "git truth" diff using the baseline models.
-				// - Project that diff through subsequent edits of the live modified model.
-				//
-				// We currently support pinning the modified side only (original is expected
-				// to stay stable, e.g. HEAD).
-				const usePinnedBaseline = baselineOriginal === model.original && baselineModified !== model.modified;
+			// Pinned-baseline mode:
+			// - Compute a "git truth" diff using the baseline models.
+			// - Project that diff through subsequent edits of the live modified model.
+			//
+			// We currently support pinning the modified side only (original is expected
+			// to stay stable, e.g. HEAD).
+			const usePinnedBaseline = !model.te2AutosaveMode && baselineOriginal === model.original && baselineModified !== model.modified;
 
-				const originalForDiff = usePinnedBaseline ? baselineOriginal : model.original;
-				const modifiedForDiff = usePinnedBaseline ? baselineModified : model.modified;
+			const originalForDiff = usePinnedBaseline ? baselineOriginal : model.original;
+			const modifiedForDiff = usePinnedBaseline ? baselineModified : model.modified;
 
-				let result = await documentDiffProvider.diffProvider.computeDiff(originalForDiff, modifiedForDiff, {
-					ignoreTrimWhitespace: this._options.ignoreTrimWhitespace.read(reader),
-					maxComputationTimeMs: this._options.maxComputationTimeMs.read(reader),
-					// When projecting a pinned diff through subsequent edits we currently do not
-					// support moved-text tracking. Disable moves to avoid losing incremental updates.
-					computeMoves: usePinnedBaseline ? false : this._options.showMoves.read(reader),
-				}, this._cancellationTokenSource.token);
+			let result = await documentDiffProvider.diffProvider.computeDiff(originalForDiff, modifiedForDiff, {
+				ignoreTrimWhitespace: this._options.ignoreTrimWhitespace.read(reader),
+				maxComputationTimeMs: this._options.maxComputationTimeMs.read(reader),
+				// When projecting a pinned diff through subsequent edits we currently do not
+				// support moved-text tracking. Disable moves to avoid losing incremental updates.
+				computeMoves: usePinnedBaseline ? false : this._options.showMoves.read(reader),
+			}, this._cancellationTokenSource.token);
 
-				if (this._cancellationTokenSource.token.isCancellationRequested) {
-					return;
-				}
-				if (model.original.isDisposed() || model.modified.isDisposed()) {
-					// TODO@hediet fishy?
-					return;
-				}
-				result = normalizeDocumentDiff(result, originalForDiff, modifiedForDiff);
+			if (this._cancellationTokenSource.token.isCancellationRequested) {
+				return;
+			}
+			if (model.original.isDisposed() || model.modified.isDisposed()) {
+				// TODO@hediet fishy?
+				return;
+			}
+			result = normalizeDocumentDiff(result, originalForDiff, modifiedForDiff);
 
-				const freezePinnedBaselineProjection = usePinnedBaseline && !!model.te2FreezeProjection;
+			const freezePinnedBaselineProjection = !model.te2AutosaveMode && usePinnedBaseline && !!model.te2FreezeProjection;
 
-				if (usePinnedBaseline) {
-					// Only project through edits of the live modified model. The original model
-					// is expected to remain unchanged in pinned-baseline mode.
-					if (!freezePinnedBaselineProjection) {
+			if (usePinnedBaseline) {
+				// Only project through edits of the live modified model. The original model
+				// is expected to remain unchanged in pinned-baseline mode.
+				if (!freezePinnedBaselineProjection) {
+					try {
 						result = applyModifiedEdits(result, modifiedTextEditInfos, model.original, model.modified) ?? result;
-					}
-				} else {
-					result = applyOriginalEdits(result, originalTextEditInfos, model.original, model.modified) ?? result;
-					result = applyModifiedEdits(result, modifiedTextEditInfos, model.original, model.modified) ?? result;
+					} catch (_projectionErr) { /* trailing-line invariant — use un-projected result */ }
 				}
+			} else {
+				try {
+					result = applyOriginalEdits(result, originalTextEditInfos, model.original, model.modified) ?? result;
+				} catch (_projectionErr) { /* trailing-line invariant — use un-projected result */ }
+				try {
+					result = applyModifiedEdits(result, modifiedTextEditInfos, model.original, model.modified) ?? result;
+				} catch (_projectionErr) { /* trailing-line invariant — use un-projected result */ }
+			}
 
-				transaction(tx => {
-					/** @description write diff result */
-					updateUnchangedRegions(result, tx);
+			transaction(tx => {
+				/** @description write diff result */
+				updateUnchangedRegions(result, tx);
 
 				this._lastDiff = result;
 				const state = DiffState.fromDiffResult(result);
@@ -748,10 +773,10 @@ function applyModifiedEdits(diff: IDocumentDiff, textEdits: TextEditInfo[], orig
 	// (one inner change per hunk). A later full recompute will restore precise
 	// char-level diffs.
 	const coarseChanges = diff.changes.map(c => c.withInnerChangesFromLineRanges());
-	let changes: readonly DetailedLineRangeMapping[];
+	let changes: readonly DetailedLineRangeMapping[] | undefined;
 	changes = applyModifiedEditsToLineRangeMappings(coarseChanges, textEdits, originalTextModel, modifiedTextModel);
-	// If projection fails, we return the previous mappings; force full recompute instead.
-	if (changes === coarseChanges) {
+	// If projection fails (undefined) or returns unchanged, force full recompute.
+	if (!changes || changes === coarseChanges) {
 		return undefined;
 	}
 
@@ -763,7 +788,7 @@ function applyModifiedEdits(diff: IDocumentDiff, textEdits: TextEditInfo[], orig
 	};
 }
 
-function applyModifiedEditsToLineRangeMappings(changes: readonly DetailedLineRangeMapping[], textEdits: TextEditInfo[], originalTextModel: ITextModel, modifiedTextModel: ITextModel): readonly DetailedLineRangeMapping[] {
+function applyModifiedEditsToLineRangeMappings(changes: readonly DetailedLineRangeMapping[], textEdits: TextEditInfo[], originalTextModel: ITextModel, modifiedTextModel: ITextModel): readonly DetailedLineRangeMapping[] | undefined {
 	const diffTextEdits = changes.flatMap(c => (c.innerChanges ?? []).map(c => {
 		const len = lengthOfRange(c.modifiedRange);
 		return new TextEditInfo(
@@ -793,11 +818,15 @@ function applyModifiedEditsToLineRangeMappings(changes: readonly DetailedLineRan
 	});
 
 	try {
-		return lineRangeMappingFromRangeMappings(
+		const result = lineRangeMappingFromRangeMappings(
 			rangeMappings,
 			new ArrayText(originalTextModel.getLinesContent()),
 			new ArrayText(modifiedTextModel.getLinesContent()),
 		);
+		// TE2: lineRangeMappingFromRangeMappings returns undefined on
+		// invariant failure (soft-bail) — treat as "can't project"
+		if (!result) { return undefined; }
+		return result;
 	} catch {
 		// Projection failed (usually due to out-of-bounds offsets after edits).
 		// Fallback to returning the previous (coarsened) mappings so we don't crash the editor.

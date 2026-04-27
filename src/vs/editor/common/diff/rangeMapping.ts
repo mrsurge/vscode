@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { groupAdjacentBy } from '../../../base/common/arrays.js';
-import { assertFn, checkAdjacentItems } from '../../../base/common/assert.js';
+import { checkAdjacentItems } from '../../../base/common/assert.js';
 import { BugIndicatingError } from '../../../base/common/errors.js';
 import { LineRange } from '../core/ranges/lineRange.js';
 import { Position } from '../core/position.js';
@@ -337,23 +337,24 @@ export function lineRangeMappingFromRangeMappings(alignments: readonly RangeMapp
 		));
 	}
 
-	assertFn(() => {
-		if (!dontAssertStartLine && changes.length > 0) {
-			if (changes[0].modified.startLineNumber !== changes[0].original.startLineNumber) {
-				return false;
-			}
-
-			if (modifiedLines.length.lineCount - changes[changes.length - 1].modified.endLineNumberExclusive !== originalLines.length.lineCount - changes[changes.length - 1].original.endLineNumberExclusive) {
-				return false;
-			}
+	// TE2: soft-bail instead of assertFn so incremental projection
+	// gracefully falls back to a full recompute via the debouncer
+	// rather than firing onUnexpectedError and crashing the editor.
+	if (!dontAssertStartLine && changes.length > 0) {
+		if (changes[0].modified.startLineNumber !== changes[0].original.startLineNumber) {
+			return undefined as any;
 		}
-		return checkAdjacentItems(changes,
-			(m1, m2) => m2.original.startLineNumber - m1.original.endLineNumberExclusive === m2.modified.startLineNumber - m1.modified.endLineNumberExclusive &&
-				// There has to be an unchanged line in between (otherwise both diffs should have been joined)
-				m1.original.endLineNumberExclusive < m2.original.startLineNumber &&
-				m1.modified.endLineNumberExclusive < m2.modified.startLineNumber,
-		);
-	});
+		if (modifiedLines.length.lineCount - changes[changes.length - 1].modified.endLineNumberExclusive !== originalLines.length.lineCount - changes[changes.length - 1].original.endLineNumberExclusive) {
+			return undefined as any;
+		}
+	}
+	if (!checkAdjacentItems(changes,
+		(m1, m2) => m2.original.startLineNumber - m1.original.endLineNumberExclusive === m2.modified.startLineNumber - m1.modified.endLineNumberExclusive &&
+			m1.original.endLineNumberExclusive < m2.original.startLineNumber &&
+			m1.modified.endLineNumberExclusive < m2.modified.startLineNumber,
+	)) {
+		return undefined as any;
+	}
 
 	return changes;
 }

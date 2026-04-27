@@ -121,6 +121,13 @@ export interface IDiffEditorModel {
 	 * the UI to display an editable draft buffer without diff-projection thrash/assertions.
 	 */
 	te2FreezeProjection?: boolean;
+
+	/**
+	 * TE2 extension: runtime mode switch for diff control flow.
+	 * - true: autosave mode (stock two-model flow)
+	 * - false: TE2 draft/freeze behavior can use pinned baselines
+	 */
+	te2AutosaveMode?: boolean;
 }
 
 export interface IDiffEditorViewModel extends IDisposable {

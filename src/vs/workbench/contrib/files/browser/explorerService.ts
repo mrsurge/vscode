@@ -488,44 +488,4 @@ export class ExplorerService implements IExplorerService {
 		const sortOrderReverse = configuration?.explorer?.sortOrderReverse || false;
 
 		if (this.config.sortOrderReverse !== sortOrderReverse) {
-			shouldRefresh = shouldRefresh || this.config.sortOrderReverse !== undefined;
-		}
-
-		this.config = configuration.explorer;
-
-		if (shouldRefresh) {
-			await this.refresh();
-		}
-	}
-
-	dispose(): void {
-		this.disposables.dispose();
-	}
-}
-
-function doesFileEventAffect(item: ExplorerItem, view: IExplorerView, events: FileChangesEvent[], types: FileChangeType[]): boolean {
-	for (const [_name, child] of item.children) {
-		if (view.isItemVisible(child)) {
-			if (events.some(e => e.contains(child.resource, ...types))) {
-				return true;
-			}
-			if (child.isDirectory && child.isDirectoryResolved) {
-				if (doesFileEventAffect(child, view, events, types)) {
-					return true;
-				}
-			}
-		}
-	}
-
-	return false;
-}
-
-function getRevealExcludes(configuration: IFilesConfiguration): IExpression {
-	const revealExcludes = configuration?.explorer?.autoRevealExclude;
-
-	if (!revealExcludes) {
-		return {};
-	}
-
-	return revealExcludes;
-}
+			shouldRefresh = shouldRefresh || this.config.sortOrderRev

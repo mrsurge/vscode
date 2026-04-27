@@ -1,6 +1,7 @@
 {
-	"tabSize": 4,
 	"indentSize": 4,
+	"tabSize": 4,
+	"newLineCharacter": "\n",
 	"convertTabsToSpaces": false,
 	"insertSpaceAfterCommaDelimiter": true,
 	"insertSpaceAfterSemicolonInForStatements": true,
@@ -10,8 +11,6 @@
 	"insertSpaceAfterOpeningAndBeforeClosingNonemptyParenthesis": false,
 	"insertSpaceAfterOpeningAndBeforeClosingNonemptyBrackets": false,
 	"insertSpaceAfterOpeningAndBeforeClosingTemplateStringBraces": false,
-	"insertSpaceAfterOpeningAndBeforeClosingEmptyBraces": true,
-	"insertSpaceBeforeFunctionParenthesis": false,
 	"placeOpenBraceOnNewLineForFunctions": false,
 	"placeOpenBraceOnNewLineForControlBlocks": false
 }

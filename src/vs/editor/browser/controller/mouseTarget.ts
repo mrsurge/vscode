@@ -1043,6 +1043,9 @@ export class MouseTargetFactory {
 	private static _doHitTestWithCaretPositionFromPoint(ctx: HitTestContext, coords: ClientCoordinates): HitTestResult {
 		// eslint-disable-next-line local/code-no-any-casts, @typescript-eslint/no-explicit-any
 		const hitResult: { offsetNode: Node; offset: number } = (<any>ctx.viewDomNode.ownerDocument).caretPositionFromPoint(coords.clientX, coords.clientY);
+		if (!hitResult) {
+			return new UnknownHitTestResult();
+		}
 
 		if (hitResult.offsetNode.nodeType === hitResult.offsetNode.TEXT_NODE) {
 			// offsetNode is expected to be the token text

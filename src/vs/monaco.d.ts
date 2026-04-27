@@ -2562,6 +2562,23 @@ declare namespace monaco.editor {
 		 * Modified model.
 		 */
 		modified: ITextModel;
+		/**
+		 * Optional pinned baseline for diff computation.
+		 *
+		 * When set, the diff editor can compute the diff using these models while
+		 * still rendering `original`/`modified`. This allows projecting a pinned diff
+		 * through subsequent edits of `modified`.
+		 */
+		originalBaseline?: ITextModel;
+		modifiedBaseline?: ITextModel;
+		/**
+		 * TE2 extension: when true and a pinned baseline is used, the diff editor must not attempt
+		 * to project the diff through live edits of the modified model (incremental updates).
+		 *
+		 * This keeps the git diff inputs effectively pinned (e.g. HEAD ↔ disk/SSOT) while allowing
+		 * the UI to display an editable draft buffer without diff-projection thrash/assertions.
+		 */
+		te2FreezeProjection?: boolean;
 	}
 
 	export interface IDiffEditorViewModel extends IDisposable {
