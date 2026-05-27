@@ -14,7 +14,7 @@ import { ISerializedLineRange, LineRange, LineRangeSet } from '../../../common/c
 import { DefaultLinesDiffComputer } from '../../../common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.js';
 import { IDocumentDiff } from '../../../common/diff/documentDiffProvider.js';
 import { MovedText } from '../../../common/diff/linesDiffComputer.js';
-import { DetailedLineRangeMapping, LineRangeMapping, lineRangeMappingFromRangeMappings, RangeMapping } from '../../../common/diff/rangeMapping.js';
+import { DetailedLineRangeMapping, LineRangeMapping, RangeMapping } from '../../../common/diff/rangeMapping.js';
 import { IDiffEditorModel, IDiffEditorViewModel } from '../../../common/editorCommon.js';
 import { ITextModel } from '../../../common/model.js';
 import { TextEditInfo } from '../../../common/model/bracketPairsTextModelPart/bracketPairsTree/beforeEditPositionMapper.js';
@@ -24,9 +24,6 @@ import { optimizeSequenceDiffs } from '../../../common/diff/defaultLinesDiffComp
 import { isDefined } from '../../../../base/common/types.js';
 import { groupAdjacentBy } from '../../../../base/common/arrays.js';
 import { softAssert } from '../../../../base/common/assert.js';
-import { Range } from '../../../common/core/range.js';
-import { ArrayText } from '../../../common/core/text/abstractText.js';
-import { lengthAdd, lengthDiffNonNegative, lengthOfRange, lengthToPosition, lengthZero, positionToLength, toLength } from '../../../common/model/bracketPairsTextModelPart/bracketPairsTree/length.js';
 
 export class DiffEditorViewModel extends Disposable implements IDiffEditorViewModel {
 	private readonly _isDiffUpToDate = observableValue<boolean>(this, false);
@@ -226,29 +223,18 @@ export class DiffEditorViewModel extends Disposable implements IDiffEditorViewMo
 		};
 
 		this._register(model.modified.onDidChangeContent((e) => {
-			const freezePinnedMode = !model.te2AutosaveMode && !!model.te2FreezeProjection && !!model.modifiedBaseline && model.modifiedBaseline !== model.modified;
-			// TE2 pinned-baseline mode: do not try to project the diff through live edits of the
-			// modified model while drafts are active (prevents projection assertions/thrash).
-			if (freezePinnedMode) {
-				return;
-			}
 			const diff = this._diff.get();
 			if (diff) {
 				const textEdits = TextEditInfo.fromModelContentChanges(e.changes);
-				try {
-					const result = applyModifiedEdits(this._lastDiff!, textEdits, model.original, model.modified);
-					if (result) {
-						this._lastDiff = result;
-						transaction(tx => {
-							this._diff.set(DiffState.fromDiffResult(this._lastDiff!), tx);
-							updateUnchangedRegions(result, tx);
-							const currentSyncedMovedText = this.movedTextToCompare.get();
-							this.movedTextToCompare.set(currentSyncedMovedText ? this._lastDiff!.moves.find(m => m.lineRangeMapping.modified.intersect(currentSyncedMovedText.lineRangeMapping.modified)) : undefined, tx);
-						});
-					}
-				} catch (_projectionErr) {
-					// Incremental projection failed (e.g. trailing-line invariant at EOF).
-					// Fall back to full debounced recompute — same recovery as original-side edits.
+				const result = applyModifiedEdits(this._lastDiff!, textEdits, model.original, model.modified);
+				if (result) {
+					this._lastDiff = result;
+					transaction(tx => {
+						this._diff.set(DiffState.fromDiffResult(this._lastDiff!), tx);
+						updateUnchangedRegions(result, tx);
+						const currentSyncedMovedText = this.movedTextToCompare.get();
+						this.movedTextToCompare.set(currentSyncedMovedText ? this._lastDiff!.moves.find(m => m.lineRangeMapping.modified.intersect(currentSyncedMovedText.lineRangeMapping.modified)) : undefined, tx);
+					});
 				}
 			}
 
@@ -256,30 +242,18 @@ export class DiffEditorViewModel extends Disposable implements IDiffEditorViewMo
 			debouncer.schedule();
 		}));
 		this._register(model.original.onDidChangeContent((e) => {
-			const freezePinnedMode = !model.te2AutosaveMode && !!model.te2FreezeProjection && !!model.modifiedBaseline && model.modifiedBaseline !== model.modified;
-			if (freezePinnedMode) {
-				// Freeze mode: skip incremental projection and let full debounced recompute run.
-				this._isDiffUpToDate.set(false, undefined);
-				debouncer.schedule();
-				return;
-			}
 			const diff = this._diff.get();
 			if (diff) {
 				const textEdits = TextEditInfo.fromModelContentChanges(e.changes);
-				try {
-					const result = applyOriginalEdits(this._lastDiff!, textEdits, model.original, model.modified);
-					if (result) {
-						this._lastDiff = result;
-						transaction(tx => {
-							this._diff.set(DiffState.fromDiffResult(this._lastDiff!), tx);
-							updateUnchangedRegions(result, tx);
-							const currentSyncedMovedText = this.movedTextToCompare.get();
-							this.movedTextToCompare.set(currentSyncedMovedText ? this._lastDiff!.moves.find(m => m.lineRangeMapping.modified.intersect(currentSyncedMovedText.lineRangeMapping.modified)) : undefined, tx);
-						});
-					}
-				} catch (_projectionErr) {
-					// Incremental projection failed (e.g. trailing-line invariant at EOF).
-					// Fall back to full debounced recompute.
+				const result = applyOriginalEdits(this._lastDiff!, textEdits, model.original, model.modified);
+				if (result) {
+					this._lastDiff = result;
+					transaction(tx => {
+						this._diff.set(DiffState.fromDiffResult(this._lastDiff!), tx);
+						updateUnchangedRegions(result, tx);
+						const currentSyncedMovedText = this.movedTextToCompare.get();
+						this.movedTextToCompare.set(currentSyncedMovedText ? this._lastDiff!.moves.find(m => m.lineRangeMapping.modified.intersect(currentSyncedMovedText.lineRangeMapping.modified)) : undefined, tx);
+					});
 				}
 			}
 
@@ -311,34 +285,15 @@ export class DiffEditorViewModel extends Disposable implements IDiffEditorViewMo
 			}));
 
 			let modifiedTextEditInfos: TextEditInfo[] = [];
-			const freezePinnedMode = !model.te2AutosaveMode && !!model.te2FreezeProjection && !!model.modifiedBaseline && model.modifiedBaseline !== model.modified;
-			if (!freezePinnedMode) {
-				store.add(model.modified.onDidChangeContent((e) => {
-					const edits = TextEditInfo.fromModelContentChanges(e.changes);
-					modifiedTextEditInfos = combineTextEditInfos(modifiedTextEditInfos, edits);
-				}));
-			}
+			store.add(model.modified.onDidChangeContent((e) => {
+				const edits = TextEditInfo.fromModelContentChanges(e.changes);
+				modifiedTextEditInfos = combineTextEditInfos(modifiedTextEditInfos, edits);
+			}));
 
-			const baselineOriginal = model.te2AutosaveMode ? model.original : (model.originalBaseline ?? model.original);
-			const baselineModified = model.te2AutosaveMode ? model.modified : (model.modifiedBaseline ?? model.modified);
-
-			// Pinned-baseline mode:
-			// - Compute a "git truth" diff using the baseline models.
-			// - Project that diff through subsequent edits of the live modified model.
-			//
-			// We currently support pinning the modified side only (original is expected
-			// to stay stable, e.g. HEAD).
-			const usePinnedBaseline = !model.te2AutosaveMode && baselineOriginal === model.original && baselineModified !== model.modified;
-
-			const originalForDiff = usePinnedBaseline ? baselineOriginal : model.original;
-			const modifiedForDiff = usePinnedBaseline ? baselineModified : model.modified;
-
-			let result = await documentDiffProvider.diffProvider.computeDiff(originalForDiff, modifiedForDiff, {
+			let result = await documentDiffProvider.diffProvider.computeDiff(model.original, model.modified, {
 				ignoreTrimWhitespace: this._options.ignoreTrimWhitespace.read(reader),
 				maxComputationTimeMs: this._options.maxComputationTimeMs.read(reader),
-				// When projecting a pinned diff through subsequent edits we currently do not
-				// support moved-text tracking. Disable moves to avoid losing incremental updates.
-				computeMoves: usePinnedBaseline ? false : this._options.showMoves.read(reader),
+				computeMoves: this._options.showMoves.read(reader),
 			}, this._cancellationTokenSource.token);
 
 			if (this._cancellationTokenSource.token.isCancellationRequested) {
@@ -348,26 +303,9 @@ export class DiffEditorViewModel extends Disposable implements IDiffEditorViewMo
 				// TODO@hediet fishy?
 				return;
 			}
-			result = normalizeDocumentDiff(result, originalForDiff, modifiedForDiff);
-
-			const freezePinnedBaselineProjection = !model.te2AutosaveMode && usePinnedBaseline && !!model.te2FreezeProjection;
-
-			if (usePinnedBaseline) {
-				// Only project through edits of the live modified model. The original model
-				// is expected to remain unchanged in pinned-baseline mode.
-				if (!freezePinnedBaselineProjection) {
-					try {
-						result = applyModifiedEdits(result, modifiedTextEditInfos, model.original, model.modified) ?? result;
-					} catch (_projectionErr) { /* trailing-line invariant — use un-projected result */ }
-				}
-			} else {
-				try {
-					result = applyOriginalEdits(result, originalTextEditInfos, model.original, model.modified) ?? result;
-				} catch (_projectionErr) { /* trailing-line invariant — use un-projected result */ }
-				try {
-					result = applyModifiedEdits(result, modifiedTextEditInfos, model.original, model.modified) ?? result;
-				} catch (_projectionErr) { /* trailing-line invariant — use un-projected result */ }
-			}
+			result = normalizeDocumentDiff(result, model.original, model.modified);
+			result = applyOriginalEdits(result, originalTextEditInfos, model.original, model.modified) ?? result;
+			result = applyModifiedEdits(result, modifiedTextEditInfos, model.original, model.modified) ?? result;
 
 			transaction(tx => {
 				/** @description write diff result */
@@ -524,33 +462,7 @@ export class UnchangedRegion {
 		minHiddenLineCount: number,
 		minContext: number,
 	): UnchangedRegion[] {
-		const maxOrig = originalLineCount + 1;
-		const maxMod = modifiedLineCount + 1;
-		const safeChanges = changes.filter(c => {
-			const o = c.original;
-			const m = c.modified;
-			if (!Number.isFinite(o.startLineNumber) || !Number.isFinite(o.endLineNumberExclusive)) {
-				return false;
-			}
-			if (!Number.isFinite(m.startLineNumber) || !Number.isFinite(m.endLineNumberExclusive)) {
-				return false;
-			}
-			if (o.startLineNumber < 1 || o.endLineNumberExclusive < 1) {
-				return false;
-			}
-			if (m.startLineNumber < 1 || m.endLineNumberExclusive < 1) {
-				return false;
-			}
-			if (o.startLineNumber > o.endLineNumberExclusive || m.startLineNumber > m.endLineNumberExclusive) {
-				return false;
-			}
-			if (o.endLineNumberExclusive > maxOrig || m.endLineNumberExclusive > maxMod) {
-				return false;
-			}
-			return true;
-		});
-
-		const inversedMappings = DetailedLineRangeMapping.inverse(safeChanges, originalLineCount, modifiedLineCount);
+		const inversedMappings = DetailedLineRangeMapping.inverse(changes, originalLineCount, modifiedLineCount);
 		const result: UnchangedRegion[] = [];
 
 		for (const mapping of inversedMappings) {
@@ -736,6 +648,9 @@ export const enum RevealPreference {
 }
 
 function applyOriginalEdits(diff: IDocumentDiff, textEdits: TextEditInfo[], originalTextModel: ITextModel, modifiedTextModel: ITextModel): IDocumentDiff | undefined {
+	return undefined;
+	/*
+	TODO@hediet
 	if (textEdits.length === 0) {
 		return diff;
 	}
@@ -745,9 +660,9 @@ function applyOriginalEdits(diff: IDocumentDiff, textEdits: TextEditInfo[], orig
 	if (!diff3) {
 		return undefined;
 	}
-	return flip(diff3);
+	return flip(diff3);*/
 }
-
+/*
 function flip(diff: IDocumentDiff): IDocumentDiff {
 	return {
 		changes: diff.changes.map(c => c.flip()),
@@ -756,51 +671,80 @@ function flip(diff: IDocumentDiff): IDocumentDiff {
 		quitEarly: diff.quitEarly,
 	};
 }
-
+*/
 function applyModifiedEdits(diff: IDocumentDiff, textEdits: TextEditInfo[], originalTextModel: ITextModel, modifiedTextModel: ITextModel): IDocumentDiff | undefined {
+	return undefined;
+	/*
+	TODO@hediet
 	if (textEdits.length === 0) {
 		return diff;
 	}
-
-	// Moves are rare and expensive to maintain under projection. For our pinned-diff
-	// work we can disable moves at the option layer. Until then, bail out.
-	if (diff.moves.length > 0) {
+	if (diff.changes.some(c => !c.innerChanges) || diff.moves.length > 0) {
+		// TODO support these cases
 		return undefined;
 	}
 
-	// The original diff result may contain many char-level inner changes.
-	// For incremental projection we intentionally coarsen to line-range mappings
-	// (one inner change per hunk). A later full recompute will restore precise
-	// char-level diffs.
-	const coarseChanges = diff.changes.map(c => c.withInnerChangesFromLineRanges());
-	let changes: readonly DetailedLineRangeMapping[] | undefined;
-	changes = applyModifiedEditsToLineRangeMappings(coarseChanges, textEdits, originalTextModel, modifiedTextModel);
-	// If projection fails (undefined) or returns unchanged, force full recompute.
-	if (!changes || changes === coarseChanges) {
-		return undefined;
-	}
+	const changes = applyModifiedEditsToLineRangeMappings(diff.changes, textEdits, originalTextModel, modifiedTextModel);
+
+	const moves = diff.moves.map(m => {
+		const newModifiedRange = applyEditToLineRange(m.lineRangeMapping.modified, textEdits);
+		return newModifiedRange ? new MovedText(
+			new SimpleLineRangeMapping(m.lineRangeMapping.original, newModifiedRange),
+			applyModifiedEditsToLineRangeMappings(m.changes, textEdits, originalTextModel, modifiedTextModel),
+		) : undefined;
+	}).filter(isDefined);
 
 	return {
 		identical: false,
 		quitEarly: false,
 		changes,
-		moves: [],
-	};
+		moves,
+	};*/
+}
+/*
+function applyEditToLineRange(range: LineRange, textEdits: TextEditInfo[]): LineRange | undefined {
+	let rangeStartLineNumber = range.startLineNumber;
+	let rangeEndLineNumberEx = range.endLineNumberExclusive;
+
+	for (let i = textEdits.length - 1; i >= 0; i--) {
+		const textEdit = textEdits[i];
+		const textEditStartLineNumber = lengthGetLineCount(textEdit.startOffset) + 1;
+		const textEditEndLineNumber = lengthGetLineCount(textEdit.endOffset) + 1;
+		const newLengthLineCount = lengthGetLineCount(textEdit.newLength);
+		const delta = newLengthLineCount - (textEditEndLineNumber - textEditStartLineNumber);
+
+		if (textEditEndLineNumber < rangeStartLineNumber) {
+			// the text edit is before us
+			rangeStartLineNumber += delta;
+			rangeEndLineNumberEx += delta;
+		} else if (textEditStartLineNumber > rangeEndLineNumberEx) {
+			// the text edit is after us
+			// NOOP
+		} else if (textEditStartLineNumber < rangeStartLineNumber && rangeEndLineNumberEx < textEditEndLineNumber) {
+			// the range is fully contained in the text edit
+			return undefined;
+		} else if (textEditStartLineNumber < rangeStartLineNumber && textEditEndLineNumber <= rangeEndLineNumberEx) {
+			// the text edit ends inside our range
+			rangeStartLineNumber = textEditEndLineNumber + 1;
+			rangeStartLineNumber += delta;
+			rangeEndLineNumberEx += delta;
+		} else if (rangeStartLineNumber <= textEditStartLineNumber && textEditEndLineNumber < rangeStartLineNumber) {
+			// the text edit starts inside our range
+			rangeEndLineNumberEx = textEditStartLineNumber;
+		} else {
+			rangeEndLineNumberEx += delta;
+		}
+	}
+
+	return new LineRange(rangeStartLineNumber, rangeEndLineNumberEx);
 }
 
-function applyModifiedEditsToLineRangeMappings(changes: readonly DetailedLineRangeMapping[], textEdits: TextEditInfo[], originalTextModel: ITextModel, modifiedTextModel: ITextModel): readonly DetailedLineRangeMapping[] | undefined {
-	const diffTextEdits = changes.flatMap(c => (c.innerChanges ?? []).map(c => {
-		const len = lengthOfRange(c.modifiedRange);
-		return new TextEditInfo(
-			positionToLength(c.originalRange.getStartPosition()),
-			positionToLength(c.originalRange.getEndPosition()),
-			toLength(len.lineCount, len.columnCount),
-		);
-	}));
-
-	if (diffTextEdits.length === 0) {
-		return changes;
-	}
+function applyModifiedEditsToLineRangeMappings(changes: readonly LineRangeMapping[], textEdits: TextEditInfo[], originalTextModel: ITextModel, modifiedTextModel: ITextModel): LineRangeMapping[] {
+	const diffTextEdits = changes.flatMap(c => c.innerChanges!.map(c => new TextEditInfo(
+		positionToLength(c.originalRange.getStartPosition()),
+		positionToLength(c.originalRange.getEndPosition()),
+		lengthOfRange(c.modifiedRange).toLength(),
+	)));
 
 	const combined = combineTextEditInfos(diffTextEdits, textEdits);
 
@@ -817,19 +761,11 @@ function applyModifiedEditsToLineRangeMappings(changes: readonly DetailedLineRan
 		);
 	});
 
-	try {
-		const result = lineRangeMappingFromRangeMappings(
-			rangeMappings,
-			new ArrayText(originalTextModel.getLinesContent()),
-			new ArrayText(modifiedTextModel.getLinesContent()),
-		);
-		// TE2: lineRangeMappingFromRangeMappings returns undefined on
-		// invariant failure (soft-bail) — treat as "can't project"
-		if (!result) { return undefined; }
-		return result;
-	} catch {
-		// Projection failed (usually due to out-of-bounds offsets after edits).
-		// Fallback to returning the previous (coarsened) mappings so we don't crash the editor.
-		return changes;
-	}
+	const newChanges = lineRangeMappingFromRangeMappings(
+		rangeMappings,
+		originalTextModel.getLinesContent(),
+		modifiedTextModel.getLinesContent(),
+	);
+	return newChanges;
 }
+*/

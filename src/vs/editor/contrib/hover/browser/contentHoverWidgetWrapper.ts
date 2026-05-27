@@ -413,6 +413,10 @@ export class ContentHoverWidgetWrapper extends Disposable implements IHoverWidge
 		return this._contentHoverWidget.isResizing;
 	}
 
+	public wasTouchInteraction(): boolean {
+		return this._contentHoverWidget.wasTouchInteraction();
+	}
+
 	public get widget() {
 		return this._contentHoverWidget;
 	}

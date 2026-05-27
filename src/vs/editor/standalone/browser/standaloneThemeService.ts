@@ -179,7 +179,7 @@ class StandaloneTheme implements IStandaloneTheme {
 		return [];
 	}
 
-	public readonly semanticHighlighting = false;
+	public readonly semanticHighlighting = true;
 }
 
 function isBuiltinTheme(themeName: string): themeName is BuiltinTheme {
@@ -332,6 +332,9 @@ export class StandaloneThemeService extends Disposable implements IStandaloneThe
 
 	public setColorMapOverride(colorMapOverride: Color[] | null): void {
 		this._colorMapOverride = colorMapOverride;
+		if (colorMapOverride && this._theme) {
+			this._theme.tokenTheme.reindexToColorMap(colorMapOverride);
+		}
 		this._updateThemeOrColorMap();
 	}
 

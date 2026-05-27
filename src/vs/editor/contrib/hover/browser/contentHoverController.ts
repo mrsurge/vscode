@@ -147,6 +147,9 @@ export class ContentHoverController extends Disposable implements IEditorContrib
 	}
 
 	private _shouldKeepHoverWidgetVisible(mouseEvent: IPartialEditorMouseEvent): boolean {
+		if (this._contentWidget?.wasTouchInteraction?.()) {
+			return true;
+		}
 		return this._isMouseOnContentHoverWidget(mouseEvent) || this._isContentWidgetResizing() || isOnColorDecorator(mouseEvent);
 	}
 
@@ -186,6 +189,9 @@ export class ContentHoverController extends Disposable implements IEditorContrib
 		const contentWidget = this._contentWidget;
 		if (!contentWidget) {
 			return false;
+		}
+		if (contentWidget.wasTouchInteraction?.()) {
+			return true;
 		}
 		const isHoverSticky = this._hoverSettings.sticky;
 		const isMouseOnStickyContentHoverWidget = (mouseEvent: IEditorMouseEvent, isHoverSticky: boolean): boolean => {

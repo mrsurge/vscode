@@ -199,7 +199,7 @@ export class TokenTheme {
 		return resolveParsedTokenThemeRules(source, customTokenColors);
 	}
 
-	private readonly _colorMap: ColorMap;
+	private _colorMap: ColorMap;
 	private readonly _root: ThemeTrieElement;
 	private readonly _cache: Map<string, number>;
 
@@ -242,6 +242,99 @@ export class TokenTheme {
 			| (languageId << MetadataConsts.LANGUAGEID_OFFSET)
 		) >>> 0;
 	}
+
+	/**
+	 * TE2: Reindex the rule trie so token foreground/background color ids match
+	 * an authoritative palette, such as the TextMate palette that generated the
+	 * active `.mtk*` CSS rules.
+	 */
+	public reindexToColorMap(newColorMap: readonly Color[]): void {
+		if (!newColorMap || newColorMap.length < 2) {
+			return;
+		}
+
+		const newHexToIdx = new Map<string, ColorId>();
+		for (let i = 1; i < newColorMap.length; i++) {
+			const color = newColorMap[i];
+			if (!color) {
+				continue;
+			}
+			const normalized = normalizeColorHex(color);
+			if (!newHexToIdx.has(normalized)) {
+				newHexToIdx.set(normalized, i);
+			}
+		}
+
+		const oldColors = this._colorMap.getColorMap();
+		const translation: ColorId[] = new Array(oldColors.length);
+		translation[0] = 0;
+		let changed = 0;
+		for (let i = 1; i < oldColors.length; i++) {
+			const oldColor = oldColors[i];
+			if (!oldColor) {
+				translation[i] = i;
+				continue;
+			}
+			const normalized = normalizeColorHex(oldColor);
+			const mapped = newHexToIdx.get(normalized);
+			if (typeof mapped === 'number') {
+				translation[i] = mapped;
+				if (mapped !== i) {
+					changed++;
+				}
+			} else {
+				translation[i] = findNearestColorIndex(normalized, newColorMap);
+				changed++;
+			}
+		}
+
+		if (changed === 0) {
+			return;
+		}
+
+		this._root.reindexColors(translation);
+		const colorMap = new ColorMap();
+		for (let i = 1; i < newColorMap.length; i++) {
+			const color = newColorMap[i];
+			if (color) {
+				colorMap.getId(normalizeColorHex(color));
+			}
+		}
+		this._colorMap = colorMap;
+		this._cache.clear();
+	}
+}
+
+function normalizeColorHex(color: Color): string {
+	const hex = color.toString().toUpperCase().replace('#', '');
+	return hex.length >= 6 ? hex.substring(0, 6) : hex;
+}
+
+function findNearestColorIndex(hex: string, palette: readonly Color[]): ColorId {
+	const r0 = parseInt(hex.substring(0, 2), 16);
+	const g0 = parseInt(hex.substring(2, 4), 16);
+	const b0 = parseInt(hex.substring(4, 6), 16);
+	let bestIdx = 1;
+	let bestDist = Infinity;
+	for (let i = 1; i < palette.length; i++) {
+		const color = palette[i];
+		if (!color) {
+			continue;
+		}
+		const candidate = normalizeColorHex(color);
+		const r = parseInt(candidate.substring(0, 2), 16);
+		const g = parseInt(candidate.substring(2, 4), 16);
+		const b = parseInt(candidate.substring(4, 6), 16);
+		const dist = (r0 - r) ** 2 + (g0 - g) ** 2 + (b0 - b) ** 2;
+		if (dist < bestDist) {
+			bestDist = dist;
+			bestIdx = i;
+		}
+		if (dist === 0) {
+			break;
+		}
+	}
+	return bestIdx;
 }
 
 const STANDARD_TOKEN_TYPE_REGEXP = /\b(comment|string|regex|regexp)\b/;
@@ -305,6 +398,20 @@ export class ThemeTrieElementRule {
 		}
 		if (background !== ColorId.None) {
 			this._background = background;
+		}
+		this.metadata = (
+			(this._fontStyle << MetadataConsts.FONT_STYLE_OFFSET)
+			| (this._foreground << MetadataConsts.FOREGROUND_OFFSET)
+			| (this._background << MetadataConsts.BACKGROUND_OFFSET)
+		) >>> 0;
+	}
+
+	public reindexColors(translation: readonly ColorId[]): void {
+		if (this._foreground > 0 && this._foreground < translation.length) {
+			this._foreground = translation[this._foreground];
+		}
+		if (this._background > 0 && this._background < translation.length) {
+			this._background = translation[this._background];
 		}
 		this.metadata = (
 			(this._fontStyle << MetadataConsts.FONT_STYLE_OFFSET)
@@ -406,6 +513,13 @@ export class ThemeTrieElement {
 		}
 
 		child.insert(tail, fontStyle, foreground, background);
+	}
+
+	public reindexColors(translation: readonly ColorId[]): void {
+		this._mainRule.reindexColors(translation);
+		for (const child of this._children.values()) {
+			child.reindexColors(translation);
+		}
 	}
 }
 
