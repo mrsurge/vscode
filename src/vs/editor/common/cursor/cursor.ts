@@ -558,6 +558,12 @@ export class CursorsController extends Disposable {
 
 		this._executeEdit(() => {
 			if (source === 'keyboard') {
+				if (text.length > 1) {
+					// TE2: Android IME paste history arrives as one keyboard text chunk.
+					this._executeEditOperation(TypeOperations.paste(this.context.cursorConfig, this._model, this.getSelections(), text, false, []), reason);
+					return;
+				}
+
 				// If this event is coming straight from the keyboard, look for electric characters and enter
 
 				const len = text.length;

@@ -13,6 +13,51 @@ import { ICommand } from '../editorCommon.js';
 import { ITextModel } from '../model.js';
 import { AutoClosingOpenCharTypeOperation, AutoClosingOvertypeOperation, AutoClosingOvertypeWithInterceptorsOperation, AutoIndentOperation, CompositionOperation, CompositionEndOvertypeOperation, EnterOperation, InterceptorElectricCharOperation, PasteOperation, shiftIndent, shouldSurroundChar, SimpleCharacterTypeOperation, SurroundSelectionOperation, TabOperation, TypeWithoutInterceptorsOperation, unshiftIndent } from './cursorTypeEditOperations.js';
 
+const TE2_SYNTHETIC_TYPE_WINDOW_MS = 35;
+const TE2_SYNTHETIC_TYPE_COUNT = 2;
+const TE2_SYNTHETIC_TYPE_RELEASE_MS = 140;
+
+let te2SyntheticTypeEvents: number[] = [];
+let te2SyntheticTypeSuppressUntil = 0;
+
+function te2Now(): number {
+	return typeof performance !== 'undefined' && typeof performance.now === 'function'
+		? performance.now()
+		: Date.now();
+}
+
+function te2ShouldBypassTypingInterceptors(ch: string, isDoingComposition: boolean): boolean {
+	if (isDoingComposition || !ch) {
+		return false;
+	}
+
+	const now = te2Now();
+	if (ch.length > 1) {
+		te2SyntheticTypeEvents = [];
+		te2SyntheticTypeSuppressUntil = now + TE2_SYNTHETIC_TYPE_RELEASE_MS;
+		return true;
+	}
+
+	if (ch.length !== 1) {
+		return false;
+	}
+
+	if (now <= te2SyntheticTypeSuppressUntil) {
+		te2SyntheticTypeSuppressUntil = now + TE2_SYNTHETIC_TYPE_RELEASE_MS;
+		return true;
+	}
+
+	// TE2: Android/Gboard history paste can arrive as impossible raw-key bursts.
+	te2SyntheticTypeEvents = te2SyntheticTypeEvents.filter(eventTime => now - eventTime <= TE2_SYNTHETIC_TYPE_WINDOW_MS);
+	te2SyntheticTypeEvents.push(now);
+	if (te2SyntheticTypeEvents.length >= TE2_SYNTHETIC_TYPE_COUNT) {
+		te2SyntheticTypeSuppressUntil = now + TE2_SYNTHETIC_TYPE_RELEASE_MS;
+		return true;
+	}
+
+	return false;
+}
+
 export class TypeOperations {
 
 	public static indent(config: CursorConfiguration, model: ICursorSimpleModel | null, selections: Selection[] | null): ICommand[] {
@@ -163,6 +208,11 @@ export class TypeOperations {
 	}
 
 	public static typeWithInterceptors(isDoingComposition: boolean, prevEditOperationType: EditOperationType, config: CursorConfiguration, model: ITextModel, selections: Selection[], autoClosedCharacters: Range[], ch: string): EditOperationResult {
+
+		const te2BypassTypingInterceptors = te2ShouldBypassTypingInterceptors(ch, isDoingComposition);
+		if (te2BypassTypingInterceptors) {
+			return SimpleCharacterTypeOperation.getEdits(config, prevEditOperationType, selections, ch, isDoingComposition);
+		}
 
 		const enterEdits = EnterOperation.getEdits(config, model, selections, ch, isDoingComposition);
 		if (enterEdits !== undefined) {
