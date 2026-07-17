@@ -38,7 +38,23 @@ suite('TextAreaInput', () => {
 	interface OutgoingCompositionEnd {
 		type: 'compositionEnd';
 	}
-	type OutoingEvent = OutgoingType | OutgoingCompositionStart | OutgoingCompositionUpdate | OutgoingCompositionEnd;
+	interface OutgoingAndroidImeType {
+		type: 'androidImeType';
+		modelLineNumber: number;
+		rangeStartOffset: number;
+		rangeEndOffset: number;
+		text: string;
+		selectionStartOffset: number;
+		selectionEndOffset: number;
+		deferCursor: boolean;
+	}
+	interface OutgoingAndroidImeCursor {
+		type: 'androidImeCursor';
+		modelLineNumber: number;
+		selectionStartOffset: number;
+		selectionEndOffset: number;
+	}
+	type OutoingEvent = OutgoingType | OutgoingCompositionStart | OutgoingCompositionUpdate | OutgoingCompositionEnd | OutgoingAndroidImeType | OutgoingAndroidImeCursor;
 
 	function yieldNow(): Promise<void> {
 		return new Promise((resolve, reject) => {
@@ -46,14 +62,25 @@ suite('TextAreaInput', () => {
 		});
 	}
 
-	async function simulateInteraction(recorded: IRecorded): Promise<OutoingEvent[]> {
+	function waitFor(milliseconds: number): Promise<void> {
+		return new Promise(resolve => setTimeout(resolve, milliseconds));
+	}
+
+	interface ISimulationOptions {
+		settleAndroidIme?: boolean;
+		syntheticTapAfterEventIndex?: number;
+		screenReaderContent?: TextAreaState;
+		afterSyntheticTap?: (state: IRecordedTextareaState) => void;
+	}
+
+	async function simulateInteraction(recorded: IRecorded, options: ISimulationOptions = {}): Promise<OutoingEvent[]> {
 		const disposables = new DisposableStore();
 		const host: ITextAreaInputHost = {
 			getDataToCopy: function (): ClipboardDataToCopy {
 				throw new Error('Function not implemented.');
 			},
 			getScreenReaderContent: function (): TextAreaState {
-				return new TextAreaState('', 0, 0, null, undefined);
+				return options.screenReaderContent ?? TextAreaState.EMPTY;
 			},
 			deduceModelPosition: function (viewAnchorPosition: Position, deltaOffset: number, lineFeedCnt: number): Position {
 				throw new Error('Function not implemented.');
@@ -89,7 +116,8 @@ suite('TextAreaInput', () => {
 			readonly onPaste = Event.None;
 			readonly onFocus = Event.None;
 			readonly onBlur = Event.None;
-			readonly onSyntheticTap = Event.None;
+			private _onSyntheticTap = this._register(new Emitter<void>());
+			readonly onSyntheticTap = this._onSyntheticTap.event;
 
 			private _state: IRecordedTextareaState;
 			private _currDispatchingEvent: IRecordedEvent | null;
@@ -176,6 +204,14 @@ suite('TextAreaInput', () => {
 				this._currDispatchingEvent = null;
 			}
 
+			public _dispatchSyntheticTap(): void {
+				this._onSyntheticTap.fire();
+			}
+
+			public _getState(): IRecordedTextareaState {
+				return { ...this._state };
+			}
+
 			getValue(): string {
 				return this._state.value;
 			}
@@ -209,7 +245,10 @@ suite('TextAreaInput', () => {
 		const input = disposables.add(new TextAreaInput(host, wrapper, recorded.env.OS, recorded.env.browser, new TestAccessibilityService(), new NullLogService()));
 
 		wrapper._initialize(recorded.initial);
-		input._initializeFromTest();
+		input._initializeFromTest(recorded.env.browser.isAndroid
+			? new TextAreaState(recorded.initial.value, recorded.initial.selectionStart, recorded.initial.selectionEnd, null, 0, 1)
+			: undefined
+		);
 
 		const outgoingEvents: OutoingEvent[] = [];
 
@@ -219,6 +258,22 @@ suite('TextAreaInput', () => {
 			replacePrevCharCnt: e.replacePrevCharCnt,
 			replaceNextCharCnt: e.replaceNextCharCnt,
 			positionDelta: e.positionDelta,
+		})));
+		disposables.add(input.onAndroidImeType((e) => outgoingEvents.push({
+			type: 'androidImeType',
+			modelLineNumber: e.modelLineNumber,
+			rangeStartOffset: e.rangeStartOffset,
+			rangeEndOffset: e.rangeEndOffset,
+			text: e.text,
+			selectionStartOffset: e.selectionStartOffset,
+			selectionEndOffset: e.selectionEndOffset,
+			deferCursor: e.deferCursor,
+		})));
+		disposables.add(input.onAndroidImeCursor((e) => outgoingEvents.push({
+			type: 'androidImeCursor',
+			modelLineNumber: e.modelLineNumber,
+			selectionStartOffset: e.selectionStartOffset,
+			selectionEndOffset: e.selectionEndOffset,
 		})));
 		disposables.add(input.onCompositionStart((e) => outgoingEvents.push({
 			type: 'compositionStart',
@@ -232,9 +287,18 @@ suite('TextAreaInput', () => {
 			type: 'compositionEnd'
 		})));
 
-		for (const event of recorded.events) {
+		for (let index = 0; index < recorded.events.length; index++) {
+			const event = recorded.events[index];
 			wrapper._dispatchRecordedEvent(event);
 			await yieldNow();
+			if (options.syntheticTapAfterEventIndex === index) {
+				wrapper._dispatchSyntheticTap();
+				options.afterSyntheticTap?.(wrapper._getState());
+				await yieldNow();
+			}
+		}
+		if (options.settleAndroidIme) {
+			await waitFor(160);
 		}
 
 		disposables.dispose();
@@ -1428,6 +1492,75 @@ suite('TextAreaInput', () => {
 
 		const actualResultingState = interpretTypeEvents(recorded.env.OS, recorded.env.browser, recorded.initial, actualOutgoingEvents);
 		assert.deepStrictEqual(actualResultingState, recorded.final);
+	});
+
+	test('Android - Chrome - rapid recomposition defers only the visual cursor', async () => {
+		const recorded: IRecorded = {
+			env: { OS: OperatingSystem.Linux, browser: { isAndroid: true, isFirefox: false, isChrome: true, isSafari: false } },
+			initial: { value: 'Word', selectionStart: 1, selectionEnd: 1, selectionDirection: 'none' },
+			events: [
+				{ timeStamp: 0, state: { value: 'Word', selectionStart: 1, selectionEnd: 1, selectionDirection: 'none' }, type: 'compositionstart', data: '' },
+				{ timeStamp: 1, state: { value: 'Wor d', selectionStart: 4, selectionEnd: 4, selectionDirection: 'none' }, type: 'compositionupdate', data: 'Wor d' },
+				{ timeStamp: 2, state: { value: 'Wor de', selectionStart: 6, selectionEnd: 6, selectionDirection: 'none' }, type: 'compositionupdate', data: 'Wor de' },
+				{ timeStamp: 3, state: { value: 'Wor de', selectionStart: 6, selectionEnd: 6, selectionDirection: 'none' }, type: 'compositionend', data: 'Wor de' },
+			],
+			final: { value: 'Wor de', selectionStart: 6, selectionEnd: 6, selectionDirection: 'none' },
+		};
+
+		assert.deepStrictEqual(await simulateInteraction(recorded, { settleAndroidIme: true }), [
+			{ type: 'compositionStart', data: '' },
+			{
+				type: 'androidImeType',
+				modelLineNumber: 1,
+				rangeStartOffset: 3,
+				rangeEndOffset: 3,
+				text: ' ',
+				selectionStartOffset: 4,
+				selectionEndOffset: 4,
+				deferCursor: false,
+			},
+			{ type: 'compositionUpdate', data: 'Wor d' },
+			{
+				type: 'androidImeType',
+				modelLineNumber: 1,
+				rangeStartOffset: 5,
+				rangeEndOffset: 5,
+				text: 'e',
+				selectionStartOffset: 6,
+				selectionEndOffset: 6,
+				deferCursor: true,
+			},
+			{ type: 'compositionUpdate', data: 'Wor de' },
+			{ type: 'compositionEnd' },
+			{
+				type: 'androidImeCursor',
+				modelLineNumber: 1,
+				selectionStartOffset: 6,
+				selectionEndOffset: 6,
+			},
+		]);
+	});
+
+	test('Android - synthetic tap clears a stale full-line composition before reseeding', async () => {
+		const recorded: IRecorded = {
+			env: { OS: OperatingSystem.Linux, browser: { isAndroid: true, isFirefox: true, isChrome: false, isSafari: false } },
+			initial: { value: 'old line composition', selectionStart: 8, selectionEnd: 8, selectionDirection: 'none' },
+			events: [
+				{ timeStamp: 0, state: { value: 'old line composition', selectionStart: 8, selectionEnd: 8, selectionDirection: 'none' }, type: 'compositionstart', data: '' },
+			],
+			final: { value: '', selectionStart: 0, selectionEnd: 0, selectionDirection: 'none' },
+		};
+		let stateAfterTap: IRecordedTextareaState | undefined;
+
+		assert.deepStrictEqual(await simulateInteraction(recorded, {
+			syntheticTapAfterEventIndex: 0,
+			screenReaderContent: new TextAreaState('old line composition', 8, 8, null, 0, 4),
+			afterSyntheticTap: state => stateAfterTap = state,
+		}), [
+			{ type: 'compositionStart', data: '' },
+			{ type: 'compositionEnd' },
+		]);
+		assert.deepStrictEqual(stateAfterTap, recorded.final);
 	});
 
 });

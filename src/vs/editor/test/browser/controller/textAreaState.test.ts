@@ -361,6 +361,41 @@ suite('TextAreaState', () => {
 		);
 	});
 
+	test('Android IME line edit uses the value delta instead of the cached cursor', () => {
+		const previousState = new TextAreaState('Word', 1, 1, null, 0, 7);
+		const currentState = new TextAreaState('Wor d', 4, 4, null, 0, 7);
+
+		assert.deepStrictEqual(TextAreaState.deduceAndroidImeLineEdit(previousState, currentState), {
+			modelLineNumber: 7,
+			rangeStartOffset: 3,
+			rangeEndOffset: 3,
+			text: ' ',
+			selectionStartOffset: 4,
+			selectionEndOffset: 4,
+		});
+	});
+
+	test('Android IME line edit ignores selection-only movement', () => {
+		const previousState = new TextAreaState('Word', 1, 1, null, 0, 3);
+		const currentState = new TextAreaState('Word', 3, 3, null, 0, 3);
+
+		assert.strictEqual(TextAreaState.deduceAndroidImeLineEdit(previousState, currentState), null);
+	});
+
+	test('Android IME line edit does not overlap common prefix and suffix', () => {
+		const previousState = new TextAreaState('aaaa', 4, 4, null, 0, 1);
+		const currentState = new TextAreaState('aaa', 3, 3, null, 0, 1);
+
+		assert.deepStrictEqual(TextAreaState.deduceAndroidImeLineEdit(previousState, currentState), {
+			modelLineNumber: 1,
+			rangeStartOffset: 3,
+			rangeEndOffset: 4,
+			text: '',
+			selectionStartOffset: 3,
+			selectionEndOffset: 3,
+		});
+	});
+
 	suite('SimplePagedScreenReaderStrategy', () => {
 
 		function testPagedScreenReaderStrategy(lines: string[], selection: Selection, expected: TextAreaState): void {

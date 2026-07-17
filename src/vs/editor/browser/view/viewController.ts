@@ -8,6 +8,7 @@ import { CoreNavigationCommands, NavigationCommandRevealType } from '../coreComm
 import { IEditorMouseEvent, IPartialEditorMouseEvent } from '../editorBrowser.js';
 import { ViewUserInputEvents } from './viewUserInputEvents.js';
 import { Position } from '../../common/core/position.js';
+import { Range } from '../../common/core/range.js';
 import { Selection } from '../../common/core/selection.js';
 import { IEditorConfiguration } from '../../common/config/editorConfiguration.js';
 import { IViewModel } from '../../common/viewModel.js';
@@ -40,6 +41,7 @@ export interface ICommandDelegate {
 	paste(text: string, pasteOnNewLine: boolean, multicursorText: string[] | null, mode: string | null): void;
 	type(text: string): void;
 	compositionType(text: string, replacePrevCharCnt: number, replaceNextCharCnt: number, positionDelta: number): void;
+	androidImeType(range: Range, text: string, selection: Selection): void;
 	startComposition(): void;
 	endComposition(): void;
 	cut(): void;
@@ -74,6 +76,10 @@ export class ViewController {
 
 	public compositionType(text: string, replacePrevCharCnt: number, replaceNextCharCnt: number, positionDelta: number): void {
 		this.commandDelegate.compositionType(text, replacePrevCharCnt, replaceNextCharCnt, positionDelta);
+	}
+
+	public androidImeType(range: Range, text: string, selection: Selection): void {
+		this.commandDelegate.androidImeType(range, text, selection);
 	}
 
 	public compositionStart(): void {

@@ -1226,6 +1226,19 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
 		this._modelData.viewModel.compositionType(text, replacePrevCharCnt, replaceNextCharCnt, positionDelta, source);
 	}
 
+	private _androidImeType(source: string | null | undefined, range: Range, text: string, selection: Selection): void {
+		if (!this._modelData) {
+			return;
+		}
+		const cursorStateComputer: ICursorStateComputer = () => [selection];
+		this._modelData.viewModel.executeEdits(
+			source,
+			[{ range, text }],
+			cursorStateComputer,
+			EditSources.cursor({ kind: 'compositionType', detailedSource: source }),
+		);
+	}
+
 	private _paste(source: string | null | undefined, text: string, pasteOnNewLine: boolean, multicursorText: string[] | null, mode: string | null, clipboardEvent?: ClipboardEvent): void {
 		if (!this._modelData) {
 			return;
@@ -1922,6 +1935,9 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
 				compositionType: (text: string, replacePrevCharCnt: number, replaceNextCharCnt: number, positionDelta: number) => {
 					this._compositionType('keyboard', text, replacePrevCharCnt, replaceNextCharCnt, positionDelta);
 				},
+				androidImeType: (range: Range, text: string, selection: Selection) => {
+					this._androidImeType('keyboard', range, text, selection);
+				},
 				startComposition: () => {
 					this._startComposition();
 				},
@@ -1952,6 +1968,9 @@ export class CodeEditorWidget extends Disposable implements editorBrowser.ICodeE
 						const payload: editorCommon.ReplacePreviousCharPayload = { text, replaceCharCnt: replacePrevCharCnt };
 						this._commandService.executeCommand(editorCommon.Handler.ReplacePreviousChar, payload);
 					}
+				},
+				androidImeType: (range: Range, text: string, selection: Selection) => {
+					this._androidImeType('keyboard', range, text, selection);
 				},
 				startComposition: () => {
 					this._commandService.executeCommand(editorCommon.Handler.CompositionStart, {});

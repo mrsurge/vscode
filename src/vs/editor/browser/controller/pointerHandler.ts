@@ -17,6 +17,12 @@ import { ViewController } from '../view/viewController.js';
 import { ViewContext } from '../../common/viewModel/viewContext.js';
 import { TextAreaSyntethicEvents } from './editContext/textArea/textAreaEditContextInput.js';
 
+function dispatchTextAreaTap(viewHelper: IPointerHandlerHelper): void {
+	const event = document.createEvent('CustomEvent');
+	event.initEvent(TextAreaSyntethicEvents.Tap, false, true);
+	viewHelper.dispatchTextAreaEvent(event);
+}
+
 /**
  * Currently only tested on iOS 13/ iPadOS.
  */
@@ -60,6 +66,7 @@ export class PointerEventHandler extends MouseHandler {
 
 		event.preventDefault();
 		this.viewHelper.focusTextArea();
+		dispatchTextAreaTap(this.viewHelper);
 		this._dispatchGesture(event, /*inSelectionMode*/false);
 	}
 
@@ -123,9 +130,7 @@ class TouchHandler extends MouseHandler {
 
 		if (target.position) {
 			// Send the tap event also to the <textarea> (for input purposes)
-			const event = document.createEvent('CustomEvent');
-			event.initEvent(TextAreaSyntethicEvents.Tap, false, true);
-			this.viewHelper.dispatchTextAreaEvent(event);
+			dispatchTextAreaTap(this.viewHelper);
 
 			this.viewController.moveTo(target.position, NavigationCommandRevealType.Minimal);
 		}

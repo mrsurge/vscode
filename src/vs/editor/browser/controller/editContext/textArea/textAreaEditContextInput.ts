@@ -19,8 +19,17 @@ import { Selection } from '../../../../common/core/selection.js';
 import { IAccessibilityService } from '../../../../../platform/accessibility/common/accessibility.js';
 import { ILogService, LogLevel } from '../../../../../platform/log/common/log.js';
 import { ClipboardDataToCopy, ClipboardEventUtils, ClipboardStoredMetadata, InMemoryClipboardMetadataManager } from '../clipboardUtils.js';
-import { _debugComposition, ITextAreaWrapper, ITypeData, TextAreaState } from './textAreaEditContextState.js';
+import { _debugComposition, IAndroidImeLineEditData, ITextAreaWrapper, ITypeData, TextAreaState } from './textAreaEditContextState.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
+
+const ANDROID_IME_RAPID_INPUT_WINDOW_MS = 35;
+const ANDROID_IME_SETTLE_DELAY_MS = 140;
+
+function androidImeNow(): number {
+	return typeof performance !== 'undefined' && typeof performance.now === 'function'
+		? performance.now()
+		: Date.now();
+}
 
 export namespace TextAreaSyntethicEvents {
 	export const Tap = '-monaco-textarea-synthetic-tap';
@@ -34,6 +43,16 @@ export interface ICompositionData {
 export interface IPasteData {
 	text: string;
 	metadata: ClipboardStoredMetadata | null;
+}
+
+export interface IAndroidImeTypeData extends IAndroidImeLineEditData {
+	deferCursor: boolean;
+}
+
+export interface IAndroidImeCursorData {
+	modelLineNumber: number;
+	selectionStartOffset: number;
+	selectionEndOffset: number;
 }
 
 export interface ITextAreaInputHost {
@@ -130,6 +149,12 @@ export class TextAreaInput extends Disposable {
 	private _onType = this._register(new Emitter<ITypeData>());
 	public readonly onType: Event<ITypeData> = this._onType.event;
 
+	private _onAndroidImeType = this._register(new Emitter<IAndroidImeTypeData>());
+	public readonly onAndroidImeType: Event<IAndroidImeTypeData> = this._onAndroidImeType.event;
+
+	private _onAndroidImeCursor = this._register(new Emitter<IAndroidImeCursorData>());
+	public readonly onAndroidImeCursor: Event<IAndroidImeCursorData> = this._onAndroidImeCursor.event;
+
 	private _onCompositionStart = this._register(new Emitter<ICompositionStartEvent>());
 	public readonly onCompositionStart: Event<ICompositionStartEvent> = this._onCompositionStart.event;
 
@@ -145,6 +170,7 @@ export class TextAreaInput extends Disposable {
 	// ---
 
 	private readonly _asyncTriggerCut: RunOnceScheduler;
+	private readonly _androidImeSettle: RunOnceScheduler;
 
 	private readonly _asyncFocusGainWriteScreenReaderContent: MutableDisposable<RunOnceScheduler> = this._register(new MutableDisposable());
 
@@ -158,6 +184,10 @@ export class TextAreaInput extends Disposable {
 
 	private _hasFocus: boolean;
 	private _currentComposition: CompositionContext | null;
+	private _androidImeOwnsTextArea: boolean;
+	private _androidImeRapidInput: boolean;
+	private _androidImeLastMutationTime: number;
+	private _androidImePendingCursor: IAndroidImeCursorData | null;
 
 	constructor(
 		private readonly _host: ITextAreaInputHost,
@@ -169,6 +199,7 @@ export class TextAreaInput extends Disposable {
 	) {
 		super();
 		this._asyncTriggerCut = this._register(new RunOnceScheduler(() => this._onCut.fire(), 0));
+		this._androidImeSettle = this._register(new RunOnceScheduler(() => this._settleAndroidIme(), ANDROID_IME_SETTLE_DELAY_MS));
 		this._textAreaState = TextAreaState.EMPTY;
 		this._selectionChangeListener = null;
 		if (this._accessibilityService.isScreenReaderOptimized()) {
@@ -183,6 +214,10 @@ export class TextAreaInput extends Disposable {
 		}));
 		this._hasFocus = false;
 		this._currentComposition = null;
+		this._androidImeOwnsTextArea = false;
+		this._androidImeRapidInput = false;
+		this._androidImeLastMutationTime = Number.NEGATIVE_INFINITY;
+		this._androidImePendingCursor = null;
 
 		let lastKeyDown: IKeyboardEvent | null = null;
 
@@ -221,6 +256,9 @@ export class TextAreaInput extends Disposable {
 				return;
 			}
 			this._currentComposition = currentComposition;
+			if (this._browser.isAndroid) {
+				this._beginAndroidImeOwnership();
+			}
 
 			if (
 				this._OS === OperatingSystem.Macintosh
@@ -265,10 +303,12 @@ export class TextAreaInput extends Disposable {
 				// For example, if the cursor is in the middle of a word like Mic|osoft
 				// and Microsoft is chosen from the keyboard's suggestions, the e.data will contain "Microsoft".
 				// This is not really usable because it doesn't tell us where the edit began and where it ended.
-				const newState = TextAreaState.readFromTextArea(this._textArea, this._textAreaState);
-				const typeInput = TextAreaState.deduceAndroidCompositionInput(this._textAreaState, newState);
-				this._textAreaState = newState;
-				this._onType.fire(typeInput);
+				if (!this._handleAndroidImeLineInput(e.timeStamp)) {
+					const newState = TextAreaState.readFromTextArea(this._textArea, this._textAreaState);
+					const typeInput = TextAreaState.deduceAndroidCompositionInput(this._textAreaState, newState);
+					this._textAreaState = newState;
+					this._onType.fire(typeInput);
+				}
 				this._onCompositionUpdate.fire(e);
 				return;
 			}
@@ -295,10 +335,12 @@ export class TextAreaInput extends Disposable {
 				// For example, if the cursor is in the middle of a word like Mic|osoft
 				// and Microsoft is chosen from the keyboard's suggestions, the e.data will contain "Microsoft".
 				// This is not really usable because it doesn't tell us where the edit began and where it ended.
-				const newState = TextAreaState.readFromTextArea(this._textArea, this._textAreaState);
-				const typeInput = TextAreaState.deduceAndroidCompositionInput(this._textAreaState, newState);
-				this._textAreaState = newState;
-				this._onType.fire(typeInput);
+				if (!this._handleAndroidImeLineInput(e.timeStamp)) {
+					const newState = TextAreaState.readFromTextArea(this._textArea, this._textAreaState);
+					const typeInput = TextAreaState.deduceAndroidCompositionInput(this._textAreaState, newState);
+					this._textAreaState = newState;
+					this._onType.fire(typeInput);
+				}
 				this._onCompositionEnd.fire();
 				return;
 			}
@@ -319,6 +361,9 @@ export class TextAreaInput extends Disposable {
 			this._textArea.setIgnoreSelectionChangeTime('received input event');
 
 			if (this._currentComposition) {
+				return;
+			}
+			if (this._browser.isAndroid && this._handleAndroidImeLineInput(e.timeStamp)) {
 				return;
 			}
 
@@ -415,6 +460,7 @@ export class TextAreaInput extends Disposable {
 			}
 		}));
 		this._register(this._textArea.onBlur(() => {
+			let endedComposition = false;
 			if (this._currentComposition) {
 				// See https://github.com/microsoft/vscode/issues/112621
 				// where compositionend is not triggered when the editor
@@ -423,11 +469,14 @@ export class TextAreaInput extends Disposable {
 				// Clear the flag to be able to write to the textarea
 				this._currentComposition = null;
 
-				// Clear the textarea to avoid an unwanted cursor type
-				this.writeNativeTextAreaContent('blurWithoutCompositionEnd');
-
 				// Fire artificial composition end
 				this._onCompositionEnd.fire();
+				endedComposition = true;
+			}
+			if (this._browser.isAndroid) {
+				this._settleAndroidIme();
+			} else if (endedComposition) {
+				this.writeNativeTextAreaContent('blurWithoutCompositionEnd');
 			}
 			this._setHasFocus(false);
 		}));
@@ -439,8 +488,11 @@ export class TextAreaInput extends Disposable {
 				// Clear the flag to be able to write to the textarea
 				this._currentComposition = null;
 
-				// Clear the textarea to avoid an unwanted cursor type
-				this.writeNativeTextAreaContent('tapWithoutCompositionEnd');
+				this._resetAndroidImeOwnership();
+
+				// Break the stale native composition before the tap's destination line
+				// becomes the next full-line Android textarea state.
+				this._setAndWriteTextAreaState('tapWithoutCompositionEnd', TextAreaState.EMPTY);
 
 				// Fire artificial composition end
 				this._onCompositionEnd.fire();
@@ -448,9 +500,88 @@ export class TextAreaInput extends Disposable {
 		}));
 	}
 
-	_initializeFromTest(): void {
+	private _beginAndroidImeOwnership(): void {
+		if (!this._androidImeOwnsTextArea) {
+			this._androidImeRapidInput = false;
+			this._androidImeLastMutationTime = Number.NEGATIVE_INFINITY;
+		}
+		this._androidImeOwnsTextArea = true;
+		this._androidImeSettle.cancel();
+	}
+
+	private _handleAndroidImeLineInput(eventTime: number): boolean {
+		const previousState = this._textAreaState;
+		if (previousState.androidModelLineNumber === undefined) {
+			return false;
+		}
+
+		const currentState = TextAreaState.readFromTextArea(this._textArea, previousState);
+		if (
+			currentState.androidModelLineNumber !== previousState.androidModelLineNumber
+			|| previousState.value.includes('\n')
+			|| previousState.value.includes('\r')
+			|| currentState.value.includes('\n')
+			|| currentState.value.includes('\r')
+		) {
+			return false;
+		}
+
+		const lineEdit = TextAreaState.deduceAndroidImeLineEdit(previousState, currentState);
+		this._textAreaState = currentState;
+		const deferCursor = this._recordAndroidImeActivity(currentState, lineEdit !== null, eventTime);
+		if (lineEdit) {
+			this._onAndroidImeType.fire({ ...lineEdit, deferCursor });
+		}
+		return true;
+	}
+
+	private _recordAndroidImeActivity(state: TextAreaState, textChanged: boolean, eventTime = androidImeNow()): boolean {
+		this._beginAndroidImeOwnership();
+		if (state.androidModelLineNumber !== undefined) {
+			this._androidImePendingCursor = {
+				modelLineNumber: state.androidModelLineNumber,
+				selectionStartOffset: state.selectionStart,
+				selectionEndOffset: state.selectionEnd,
+			};
+		}
+
+		if (textChanged) {
+			if (eventTime - this._androidImeLastMutationTime <= ANDROID_IME_RAPID_INPUT_WINDOW_MS) {
+				this._androidImeRapidInput = true;
+			}
+			this._androidImeLastMutationTime = eventTime;
+		}
+
+		if (!this._currentComposition) {
+			this._androidImeSettle.schedule();
+		}
+		return this._androidImeRapidInput;
+	}
+
+	private _settleAndroidIme(): void {
+		if (!this._browser.isAndroid || !this._androidImeOwnsTextArea || this._currentComposition) {
+			return;
+		}
+
+		const pendingCursor = this._androidImePendingCursor;
+		if (pendingCursor) {
+			this._onAndroidImeCursor.fire(pendingCursor);
+		}
+		this._resetAndroidImeOwnership();
+		this.writeNativeTextAreaContent('android ime settled');
+	}
+
+	private _resetAndroidImeOwnership(): void {
+		this._androidImeSettle.cancel();
+		this._androidImeOwnsTextArea = false;
+		this._androidImeRapidInput = false;
+		this._androidImeLastMutationTime = Number.NEGATIVE_INFINITY;
+		this._androidImePendingCursor = null;
+	}
+
+	_initializeFromTest(textAreaState?: TextAreaState): void {
 		this._hasFocus = true;
-		this._textAreaState = TextAreaState.readFromTextArea(this._textArea, null);
+		this._textAreaState = textAreaState ?? TextAreaState.readFromTextArea(this._textArea, null);
 	}
 
 	private _installSelectionChangeListener(): IDisposable {
@@ -502,6 +633,21 @@ export class TextAreaInput extends Disposable {
 			if (delta2 < 100) {
 				// received a `selectionchange` event within 100ms since we touched the textarea
 				// => ignore it, since we caused it
+				return;
+			}
+
+			if (this._browser.isAndroid && this._textAreaState.androidModelLineNumber !== undefined) {
+				const currentState = TextAreaState.readFromTextArea(this._textArea, this._textAreaState);
+				if (this._textAreaState.value !== currentState.value) {
+					return;
+				}
+				if (
+					this._textAreaState.selectionStart !== currentState.selectionStart
+					|| this._textAreaState.selectionEnd !== currentState.selectionEnd
+				) {
+					this._textAreaState = currentState;
+					this._recordAndroidImeActivity(currentState, false);
+				}
 				return;
 			}
 
@@ -601,7 +747,11 @@ export class TextAreaInput extends Disposable {
 	}
 
 	public writeNativeTextAreaContent(reason: string): void {
-		if ((!this._accessibilityService.isScreenReaderOptimized() && reason === 'render') || this._currentComposition) {
+		if (
+			(!this._accessibilityService.isScreenReaderOptimized() && reason === 'render')
+			|| this._currentComposition
+			|| (this._browser.isAndroid && this._androidImeOwnsTextArea)
+		) {
 			// Do not write to the text on render unless a screen reader is being used #192278
 			// Do not write to the text area when doing composition
 			return;

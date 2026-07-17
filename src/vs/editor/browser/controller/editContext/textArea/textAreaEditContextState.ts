@@ -26,6 +26,15 @@ export interface ITypeData {
 	positionDelta: number;
 }
 
+export interface IAndroidImeLineEditData {
+	modelLineNumber: number;
+	rangeStartOffset: number;
+	rangeEndOffset: number;
+	text: string;
+	selectionStartOffset: number;
+	selectionEndOffset: number;
+}
+
 export class TextAreaState {
 
 	public static readonly EMPTY = new TextAreaState('', 0, 0, null, undefined);
@@ -40,6 +49,8 @@ export class TextAreaState {
 		public readonly selection: Range | null,
 		/** the visible line count (wrapped, not necessarily matching \n characters) for the text in `value` before `selectionStart` */
 		public readonly newlineCountBeforeSelection: number | undefined,
+		/** the model line represented by `value` while Android owns the textarea */
+		public readonly androidModelLineNumber: number | undefined = undefined,
 	) { }
 
 	public toString(): string {
@@ -58,14 +69,14 @@ export class TextAreaState {
 				newlineCountBeforeSelection = previousState.newlineCountBeforeSelection;
 			}
 		}
-		return new TextAreaState(value, selectionStart, selectionEnd, null, newlineCountBeforeSelection);
+		return new TextAreaState(value, selectionStart, selectionEnd, null, newlineCountBeforeSelection, previousState?.androidModelLineNumber);
 	}
 
 	public collapseSelection(): TextAreaState {
 		if (this.selectionStart === this.value.length) {
 			return this;
 		}
-		return new TextAreaState(this.value, this.value.length, this.value.length, null, undefined);
+		return new TextAreaState(this.value, this.value.length, this.value.length, null, undefined, this.androidModelLineNumber);
 	}
 
 	public isWrittenToTextArea(textArea: ITextAreaWrapper, select: boolean): boolean {
@@ -222,6 +233,37 @@ export class TextAreaState {
 			replacePrevCharCnt: previousSelectionEnd,
 			replaceNextCharCnt: previousValue.length - previousSelectionEnd,
 			positionDelta: currentSelectionEnd - currentValue.length
+		};
+	}
+
+	public static deduceAndroidImeLineEdit(previousState: TextAreaState, currentState: TextAreaState): IAndroidImeLineEditData | null {
+		const modelLineNumber = previousState.androidModelLineNumber;
+		if (
+			modelLineNumber === undefined
+			|| currentState.androidModelLineNumber !== modelLineNumber
+			|| previousState.value === currentState.value
+			|| previousState.value.includes('\n')
+			|| previousState.value.includes('\r')
+			|| currentState.value.includes('\n')
+			|| currentState.value.includes('\r')
+		) {
+			return null;
+		}
+
+		const prefixLength = commonPrefixLength(previousState.value, currentState.value);
+		const suffixLength = Math.min(
+			commonSuffixLength(previousState.value, currentState.value),
+			previousState.value.length - prefixLength,
+			currentState.value.length - prefixLength,
+		);
+
+		return {
+			modelLineNumber,
+			rangeStartOffset: prefixLength,
+			rangeEndOffset: previousState.value.length - suffixLength,
+			text: currentState.value.substring(prefixLength, currentState.value.length - suffixLength),
+			selectionStartOffset: currentState.selectionStart,
+			selectionEndOffset: currentState.selectionEnd,
 		};
 	}
 
