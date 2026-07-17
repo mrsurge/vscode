@@ -362,8 +362,8 @@ suite('TextAreaState', () => {
 	});
 
 	test('Android IME line edit uses the value delta instead of the cached cursor', () => {
-		const previousState = new TextAreaState('Word', 1, 1, null, 0, 7);
-		const currentState = new TextAreaState('Wor d', 4, 4, null, 0, 7);
+		const previousState = TextAreaState.createAndroidImeLine('Word', 1, 1, null, 7);
+		const currentState = new TextAreaState('\u21ddWor d\n\n', 5, 5, null, 0, 7);
 
 		assert.deepStrictEqual(TextAreaState.deduceAndroidImeLineEdit(previousState, currentState), {
 			modelLineNumber: 7,
@@ -376,15 +376,15 @@ suite('TextAreaState', () => {
 	});
 
 	test('Android IME line edit ignores selection-only movement', () => {
-		const previousState = new TextAreaState('Word', 1, 1, null, 0, 3);
-		const currentState = new TextAreaState('Word', 3, 3, null, 0, 3);
+		const previousState = TextAreaState.createAndroidImeLine('Word', 1, 1, null, 3);
+		const currentState = new TextAreaState('\u21ddWord\n\n', 4, 4, null, 0, 3);
 
 		assert.strictEqual(TextAreaState.deduceAndroidImeLineEdit(previousState, currentState), null);
 	});
 
 	test('Android IME line edit does not overlap common prefix and suffix', () => {
-		const previousState = new TextAreaState('aaaa', 4, 4, null, 0, 1);
-		const currentState = new TextAreaState('aaa', 3, 3, null, 0, 1);
+		const previousState = TextAreaState.createAndroidImeLine('aaaa', 4, 4, null, 1);
+		const currentState = new TextAreaState('\u21ddaaa\n\n', 4, 4, null, 0, 1);
 
 		assert.deepStrictEqual(TextAreaState.deduceAndroidImeLineEdit(previousState, currentState), {
 			modelLineNumber: 1,
@@ -393,6 +393,57 @@ suite('TextAreaState', () => {
 			text: '',
 			selectionStartOffset: 3,
 			selectionEndOffset: 3,
+		});
+	});
+
+	test('Android IME line projection keeps sentinel offsets out of model edits', () => {
+		const state = TextAreaState.createAndroidImeLine('abc', 1, 2, new Range(2, 2, 2, 3), 2);
+
+		assert.strictEqual(state.value, '\u21ddabc\n\n');
+		assert.strictEqual(state.selectionStart, 2);
+		assert.strictEqual(state.selectionEnd, 3);
+		assert.strictEqual(state.androidModelLineNumber, 2);
+	});
+
+	test('Android IME line edit maps a native line break through the sentinel corpus', () => {
+		const previousState = TextAreaState.createAndroidImeLine('abc', 3, 3, null, 5);
+		const currentState = new TextAreaState('\u21ddabc\n\n\n', 5, 5, null, 0, 5);
+
+		assert.deepStrictEqual(TextAreaState.deduceAndroidImeLineEdit(previousState, currentState), {
+			modelLineNumber: 5,
+			rangeStartOffset: 3,
+			rangeEndOffset: 3,
+			text: '\n',
+			selectionStartOffset: 4,
+			selectionEndOffset: 4,
+		});
+	});
+
+	test('Android IME line edit maps backward delete through the sentinel corpus', () => {
+		const previousState = TextAreaState.createAndroidImeLine('abc', 2, 2, null, 5);
+		const currentState = new TextAreaState('\u21ddac\n\n', 2, 2, null, 0, 5);
+
+		assert.deepStrictEqual(TextAreaState.deduceAndroidImeLineEdit(previousState, currentState), {
+			modelLineNumber: 5,
+			rangeStartOffset: 1,
+			rangeEndOffset: 2,
+			text: '',
+			selectionStartOffset: 1,
+			selectionEndOffset: 1,
+		});
+	});
+
+	test('Android IME line edit preserves UTF-16 offsets', () => {
+		const previousState = TextAreaState.createAndroidImeLine('a\ud83d\ude00b', 3, 3, null, 9);
+		const currentState = new TextAreaState('\u21dda\ud83d\ude00Xb\n\n', 5, 5, null, 0, 9);
+
+		assert.deepStrictEqual(TextAreaState.deduceAndroidImeLineEdit(previousState, currentState), {
+			modelLineNumber: 9,
+			rangeStartOffset: 3,
+			rangeEndOffset: 3,
+			text: 'X',
+			selectionStartOffset: 4,
+			selectionEndOffset: 4,
 		});
 	});
 

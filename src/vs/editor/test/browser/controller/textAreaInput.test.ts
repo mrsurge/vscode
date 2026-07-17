@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { mainWindow } from '../../../../base/browser/window.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { OperatingSystem } from '../../../../base/common/platform.js';
@@ -46,15 +47,8 @@ suite('TextAreaInput', () => {
 		text: string;
 		selectionStartOffset: number;
 		selectionEndOffset: number;
-		deferCursor: boolean;
 	}
-	interface OutgoingAndroidImeCursor {
-		type: 'androidImeCursor';
-		modelLineNumber: number;
-		selectionStartOffset: number;
-		selectionEndOffset: number;
-	}
-	type OutoingEvent = OutgoingType | OutgoingCompositionStart | OutgoingCompositionUpdate | OutgoingCompositionEnd | OutgoingAndroidImeType | OutgoingAndroidImeCursor;
+	type OutoingEvent = OutgoingType | OutgoingCompositionStart | OutgoingCompositionUpdate | OutgoingCompositionEnd | OutgoingAndroidImeType;
 
 	function yieldNow(): Promise<void> {
 		return new Promise((resolve, reject) => {
@@ -62,12 +56,11 @@ suite('TextAreaInput', () => {
 		});
 	}
 
-	function waitFor(milliseconds: number): Promise<void> {
-		return new Promise(resolve => setTimeout(resolve, milliseconds));
+	function waitForAnimationFrame(): Promise<void> {
+		return new Promise(resolve => mainWindow.requestAnimationFrame(() => setTimeout(resolve, 0)));
 	}
 
 	interface ISimulationOptions {
-		settleAndroidIme?: boolean;
 		syntheticTapAfterEventIndex?: number;
 		screenReaderContent?: TextAreaState;
 		afterSyntheticTap?: (state: IRecordedTextareaState) => void;
@@ -267,13 +260,6 @@ suite('TextAreaInput', () => {
 			text: e.text,
 			selectionStartOffset: e.selectionStartOffset,
 			selectionEndOffset: e.selectionEndOffset,
-			deferCursor: e.deferCursor,
-		})));
-		disposables.add(input.onAndroidImeCursor((e) => outgoingEvents.push({
-			type: 'androidImeCursor',
-			modelLineNumber: e.modelLineNumber,
-			selectionStartOffset: e.selectionStartOffset,
-			selectionEndOffset: e.selectionEndOffset,
 		})));
 		disposables.add(input.onCompositionStart((e) => outgoingEvents.push({
 			type: 'compositionStart',
@@ -297,8 +283,8 @@ suite('TextAreaInput', () => {
 				await yieldNow();
 			}
 		}
-		if (options.settleAndroidIme) {
-			await waitFor(160);
+		if (recorded.env.browser.isAndroid) {
+			await waitForAnimationFrame();
 		}
 
 		disposables.dispose();
@@ -1494,72 +1480,52 @@ suite('TextAreaInput', () => {
 		assert.deepStrictEqual(actualResultingState, recorded.final);
 	});
 
-	test('Android - Chrome - rapid recomposition defers only the visual cursor', async () => {
+	test('Android - input bursts coalesce without composition lifecycle authority', async () => {
 		const recorded: IRecorded = {
 			env: { OS: OperatingSystem.Linux, browser: { isAndroid: true, isFirefox: false, isChrome: true, isSafari: false } },
-			initial: { value: 'Word', selectionStart: 1, selectionEnd: 1, selectionDirection: 'none' },
+			initial: { value: '\u21ddWord\n\n', selectionStart: 2, selectionEnd: 2, selectionDirection: 'none' },
 			events: [
-				{ timeStamp: 0, state: { value: 'Word', selectionStart: 1, selectionEnd: 1, selectionDirection: 'none' }, type: 'compositionstart', data: '' },
-				{ timeStamp: 1, state: { value: 'Wor d', selectionStart: 4, selectionEnd: 4, selectionDirection: 'none' }, type: 'compositionupdate', data: 'Wor d' },
-				{ timeStamp: 2, state: { value: 'Wor de', selectionStart: 6, selectionEnd: 6, selectionDirection: 'none' }, type: 'compositionupdate', data: 'Wor de' },
-				{ timeStamp: 3, state: { value: 'Wor de', selectionStart: 6, selectionEnd: 6, selectionDirection: 'none' }, type: 'compositionend', data: 'Wor de' },
+				{ timeStamp: 0, state: { value: '\u21ddWord\n\n', selectionStart: 2, selectionEnd: 2, selectionDirection: 'none' }, type: 'compositionstart', data: '' },
+				{ timeStamp: 1, state: { value: '\u21ddWor d\n\n', selectionStart: 5, selectionEnd: 5, selectionDirection: 'none' }, type: 'input', data: 'Wor d', inputType: 'insertCompositionText', isComposing: true },
+				{ timeStamp: 2, state: { value: '\u21ddWor de\n\n', selectionStart: 7, selectionEnd: 7, selectionDirection: 'none' }, type: 'compositionupdate', data: 'Wor de' },
+				{ timeStamp: 3, state: { value: '\u21ddWor de\n\n', selectionStart: 7, selectionEnd: 7, selectionDirection: 'none' }, type: 'input', data: 'Wor de', inputType: 'insertCompositionText', isComposing: true },
 			],
-			final: { value: 'Wor de', selectionStart: 6, selectionEnd: 6, selectionDirection: 'none' },
+			final: { value: '\u21ddWor de\n\n', selectionStart: 7, selectionEnd: 7, selectionDirection: 'none' },
 		};
 
-		assert.deepStrictEqual(await simulateInteraction(recorded, { settleAndroidIme: true }), [
-			{ type: 'compositionStart', data: '' },
+		assert.deepStrictEqual(await simulateInteraction(recorded, {
+			screenReaderContent: TextAreaState.createAndroidImeLine('Wor de', 6, 6, null, 1),
+		}), [
 			{
 				type: 'androidImeType',
 				modelLineNumber: 1,
 				rangeStartOffset: 3,
-				rangeEndOffset: 3,
-				text: ' ',
-				selectionStartOffset: 4,
-				selectionEndOffset: 4,
-				deferCursor: false,
-			},
-			{ type: 'compositionUpdate', data: 'Wor d' },
-			{
-				type: 'androidImeType',
-				modelLineNumber: 1,
-				rangeStartOffset: 5,
-				rangeEndOffset: 5,
-				text: 'e',
-				selectionStartOffset: 6,
-				selectionEndOffset: 6,
-				deferCursor: true,
-			},
-			{ type: 'compositionUpdate', data: 'Wor de' },
-			{ type: 'compositionEnd' },
-			{
-				type: 'androidImeCursor',
-				modelLineNumber: 1,
+				rangeEndOffset: 4,
+				text: ' de',
 				selectionStartOffset: 6,
 				selectionEndOffset: 6,
 			},
 		]);
 	});
 
-	test('Android - synthetic tap clears a stale full-line composition before reseeding', async () => {
+	test('Android - composition noise without input does not gate or clear the projection', async () => {
 		const recorded: IRecorded = {
 			env: { OS: OperatingSystem.Linux, browser: { isAndroid: true, isFirefox: true, isChrome: false, isSafari: false } },
-			initial: { value: 'old line composition', selectionStart: 8, selectionEnd: 8, selectionDirection: 'none' },
+			initial: { value: '\u21ddold line composition\n\n', selectionStart: 9, selectionEnd: 9, selectionDirection: 'none' },
 			events: [
-				{ timeStamp: 0, state: { value: 'old line composition', selectionStart: 8, selectionEnd: 8, selectionDirection: 'none' }, type: 'compositionstart', data: '' },
+				{ timeStamp: 0, state: { value: '\u21ddold line composition\n\n', selectionStart: 9, selectionEnd: 9, selectionDirection: 'none' }, type: 'compositionstart', data: '' },
+				{ timeStamp: 1, state: { value: '\u21ddold line composition\n\n', selectionStart: 9, selectionEnd: 9, selectionDirection: 'none' }, type: 'compositionupdate', data: 'stale' },
+				{ timeStamp: 2, state: { value: '\u21ddold line composition\n\n', selectionStart: 9, selectionEnd: 9, selectionDirection: 'none' }, type: 'compositionend', data: 'stale' },
 			],
-			final: { value: '', selectionStart: 0, selectionEnd: 0, selectionDirection: 'none' },
+			final: { value: '\u21ddold line composition\n\n', selectionStart: 9, selectionEnd: 9, selectionDirection: 'none' },
 		};
 		let stateAfterTap: IRecordedTextareaState | undefined;
 
 		assert.deepStrictEqual(await simulateInteraction(recorded, {
-			syntheticTapAfterEventIndex: 0,
-			screenReaderContent: new TextAreaState('old line composition', 8, 8, null, 0, 4),
+			syntheticTapAfterEventIndex: 2,
+			screenReaderContent: TextAreaState.createAndroidImeLine('old line composition', 8, 8, null, 4),
 			afterSyntheticTap: state => stateAfterTap = state,
-		}), [
-			{ type: 'compositionStart', data: '' },
-			{ type: 'compositionEnd' },
-		]);
+		}), []);
 		assert.deepStrictEqual(stateAfterTap, recorded.final);
 	});
 

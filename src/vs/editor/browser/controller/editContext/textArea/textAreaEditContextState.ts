@@ -35,6 +35,15 @@ export interface IAndroidImeLineEditData {
 	selectionEndOffset: number;
 }
 
+const ANDROID_IME_LINE_PREFIX = '\u21dd';
+const ANDROID_IME_LINE_SUFFIX = '\n\n';
+
+interface IAndroidImeLineProjection {
+	value: string;
+	selectionStartOffset: number;
+	selectionEndOffset: number;
+}
+
 export class TextAreaState {
 
 	public static readonly EMPTY = new TextAreaState('', 0, 0, null, undefined);
@@ -55,6 +64,26 @@ export class TextAreaState {
 
 	public toString(): string {
 		return `[ <${this.value}>, selectionStart: ${this.selectionStart}, selectionEnd: ${this.selectionEnd}]`;
+	}
+
+	public static createAndroidImeLine(
+		lineContent: string,
+		selectionStartOffset: number,
+		selectionEndOffset: number,
+		selection: Range | null,
+		modelLineNumber: number,
+	): TextAreaState {
+		const lineLength = lineContent.length;
+		const startOffset = Math.min(Math.max(selectionStartOffset, 0), lineLength);
+		const endOffset = Math.min(Math.max(selectionEndOffset, startOffset), lineLength);
+		return new TextAreaState(
+			`${ANDROID_IME_LINE_PREFIX}${lineContent}${ANDROID_IME_LINE_SUFFIX}`,
+			ANDROID_IME_LINE_PREFIX.length + startOffset,
+			ANDROID_IME_LINE_PREFIX.length + endOffset,
+			selection,
+			0,
+			modelLineNumber,
+		);
 	}
 
 	public static readFromTextArea(textArea: ITextAreaWrapper, previousState: TextAreaState | null): TextAreaState {
@@ -241,30 +270,44 @@ export class TextAreaState {
 		if (
 			modelLineNumber === undefined
 			|| currentState.androidModelLineNumber !== modelLineNumber
-			|| previousState.value === currentState.value
-			|| previousState.value.includes('\n')
-			|| previousState.value.includes('\r')
-			|| currentState.value.includes('\n')
-			|| currentState.value.includes('\r')
 		) {
 			return null;
 		}
+		const previousProjection = TextAreaState._readAndroidImeLineProjection(previousState);
+		const currentProjection = TextAreaState._readAndroidImeLineProjection(currentState);
+		if (!previousProjection || !currentProjection || previousProjection.value === currentProjection.value) {
+			return null;
+		}
 
-		const prefixLength = commonPrefixLength(previousState.value, currentState.value);
+		const prefixLength = commonPrefixLength(previousProjection.value, currentProjection.value);
 		const suffixLength = Math.min(
-			commonSuffixLength(previousState.value, currentState.value),
-			previousState.value.length - prefixLength,
-			currentState.value.length - prefixLength,
+			commonSuffixLength(previousProjection.value, currentProjection.value),
+			previousProjection.value.length - prefixLength,
+			currentProjection.value.length - prefixLength,
 		);
 
 		return {
 			modelLineNumber,
 			rangeStartOffset: prefixLength,
-			rangeEndOffset: previousState.value.length - suffixLength,
-			text: currentState.value.substring(prefixLength, currentState.value.length - suffixLength),
-			selectionStartOffset: currentState.selectionStart,
-			selectionEndOffset: currentState.selectionEnd,
+			rangeEndOffset: previousProjection.value.length - suffixLength,
+			text: currentProjection.value.substring(prefixLength, currentProjection.value.length - suffixLength),
+			selectionStartOffset: currentProjection.selectionStartOffset,
+			selectionEndOffset: currentProjection.selectionEndOffset,
 		};
+	}
+
+	private static _readAndroidImeLineProjection(state: TextAreaState): IAndroidImeLineProjection | null {
+		if (!state.value.startsWith(ANDROID_IME_LINE_PREFIX) || !state.value.endsWith(ANDROID_IME_LINE_SUFFIX)) {
+			return null;
+		}
+
+		const lineStart = ANDROID_IME_LINE_PREFIX.length;
+		const lineEnd = state.value.length - ANDROID_IME_LINE_SUFFIX.length;
+		const value = state.value.substring(lineStart, lineEnd);
+		const clampSelectionOffset = (offset: number) => Math.min(Math.max(offset - lineStart, 0), value.length);
+		const selectionStartOffset = clampSelectionOffset(state.selectionStart);
+		const selectionEndOffset = Math.max(selectionStartOffset, clampSelectionOffset(state.selectionEnd));
+		return { value, selectionStartOffset, selectionEndOffset };
 	}
 
 	public static fromScreenReaderContentState(screenReaderContentState: ISimpleScreenReaderContentState) {
