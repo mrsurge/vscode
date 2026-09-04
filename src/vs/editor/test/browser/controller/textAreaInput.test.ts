@@ -41,6 +41,7 @@ suite('TextAreaInput', () => {
 	}
 	interface OutgoingAndroidImeType {
 		type: 'androidImeType';
+		inputType: string;
 		modelLineNumber: number;
 		rangeStartOffset: number;
 		rangeEndOffset: number;
@@ -254,6 +255,7 @@ suite('TextAreaInput', () => {
 		})));
 		disposables.add(input.onAndroidImeType((e) => outgoingEvents.push({
 			type: 'androidImeType',
+			inputType: e.inputType,
 			modelLineNumber: e.modelLineNumber,
 			rangeStartOffset: e.rangeStartOffset,
 			rangeEndOffset: e.rangeEndOffset,
@@ -1498,6 +1500,7 @@ suite('TextAreaInput', () => {
 		}), [
 			{
 				type: 'androidImeType',
+				inputType: 'insertCompositionText',
 				modelLineNumber: 1,
 				rangeStartOffset: 3,
 				rangeEndOffset: 4,
@@ -1506,6 +1509,28 @@ suite('TextAreaInput', () => {
 				selectionEndOffset: 6,
 			},
 		]);
+	});
+
+	test('Android - native line break retains its input type', async () => {
+		const recorded: IRecorded = {
+			env: { OS: OperatingSystem.Linux, browser: { isAndroid: true, isFirefox: true, isChrome: false, isSafari: false } },
+			initial: { value: '\u21ddabc\n\n', selectionStart: 4, selectionEnd: 4, selectionDirection: 'none' },
+			events: [
+				{ timeStamp: 0, state: { value: '\u21ddabc\n\n\n', selectionStart: 5, selectionEnd: 5, selectionDirection: 'none' }, type: 'input', data: null, inputType: 'insertLineBreak', isComposing: false },
+			],
+			final: { value: '\u21ddabc\n\n\n', selectionStart: 5, selectionEnd: 5, selectionDirection: 'none' },
+		};
+
+		assert.deepStrictEqual(await simulateInteraction(recorded), [{
+			type: 'androidImeType',
+			inputType: 'insertLineBreak',
+			modelLineNumber: 1,
+			rangeStartOffset: 3,
+			rangeEndOffset: 3,
+			text: '\n',
+			selectionStartOffset: 4,
+			selectionEndOffset: 4,
+		}]);
 	});
 
 	test('Android - composition noise without input does not gate or clear the projection', async () => {

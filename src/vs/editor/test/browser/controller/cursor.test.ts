@@ -3775,6 +3775,28 @@ suite('Editor Controller', () => {
 		});
 	});
 
+	test('Enter honors indentation after a rapid synthetic text burst', () => {
+		usingCursor({
+			text: [
+				'',
+				'if (true) {'
+			],
+			languageId: indentRulesLanguageId,
+			modelOpts: { insertSpaces: false },
+			editorOpts: { autoIndent: 'full' }
+		}, (editor, model, viewModel) => {
+			viewModel.type('a', 'keyboard');
+			viewModel.type('b', 'keyboard');
+			viewModel.type('c', 'keyboard');
+
+			moveTo(editor, viewModel, 2, 12, false);
+			viewModel.type('\n', 'keyboard');
+
+			assertCursor(viewModel, new Selection(3, 2, 3, 2));
+			assert.strictEqual(model.getLineContent(3), '\t');
+		});
+	});
+
 	test('Type honors decreaseIndentPattern', () => {
 		usingCursor({
 			text: [

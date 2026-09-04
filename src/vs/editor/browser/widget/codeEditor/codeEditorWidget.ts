@@ -81,6 +81,9 @@ function te2ShouldSuppressDidType(source: string | null | undefined, text: strin
 	if (source !== 'keyboard' || !text) {
 		return false;
 	}
+	if (text === '\n') {
+		return false;
+	}
 
 	const now = te2Now();
 	if (text.length > 1) {

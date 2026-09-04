@@ -36,7 +36,9 @@ export interface IPasteData {
 	metadata: ClipboardStoredMetadata | null;
 }
 
-export type IAndroidImeTypeData = IAndroidImeLineEditData;
+export interface IAndroidImeTypeData extends IAndroidImeLineEditData {
+	inputType: string;
+}
 
 export interface ITextAreaInputHost {
 	getDataToCopy(): ClipboardDataToCopy;
@@ -168,6 +170,7 @@ export class TextAreaInput extends Disposable {
 	private _androidImeInputGeneration: number;
 	private _androidImeReseedGeneration: number;
 	private _androidImeTransactionPending: boolean;
+	private _androidImeInputType: string;
 
 	constructor(
 		private readonly _host: ITextAreaInputHost,
@@ -197,6 +200,7 @@ export class TextAreaInput extends Disposable {
 		this._androidImeInputGeneration = 0;
 		this._androidImeReseedGeneration = 0;
 		this._androidImeTransactionPending = false;
+		this._androidImeInputType = '';
 
 		let lastKeyDown: IKeyboardEvent | null = null;
 
@@ -312,7 +316,7 @@ export class TextAreaInput extends Disposable {
 			this._textArea.setIgnoreSelectionChangeTime('received input event');
 
 			if (this._browser.isAndroid && this._textAreaState.androidModelLineNumber !== undefined) {
-				this._scheduleAndroidImeInput();
+				this._scheduleAndroidImeInput(e.inputType);
 				return;
 			}
 			if (this._currentComposition) {
@@ -442,9 +446,10 @@ export class TextAreaInput extends Disposable {
 		}));
 	}
 
-	private _scheduleAndroidImeInput(): void {
+	private _scheduleAndroidImeInput(inputType: string): void {
 		this._androidImeInputGeneration++;
 		this._androidImeTransactionPending = true;
+		this._androidImeInputType = inputType;
 		if (this._androidImeFrame.value) {
 			return;
 		}
@@ -470,7 +475,7 @@ export class TextAreaInput extends Disposable {
 		const lineEdit = TextAreaState.deduceAndroidImeLineEdit(previousState, currentState);
 		this._textAreaState = currentState;
 		if (lineEdit) {
-			this._onAndroidImeType.fire(lineEdit);
+			this._onAndroidImeType.fire({ ...lineEdit, inputType: this._androidImeInputType });
 		}
 		this._androidImeReseedGeneration = generation;
 		this._androidImeReseed.schedule();
@@ -488,6 +493,7 @@ export class TextAreaInput extends Disposable {
 		this._androidImeFrame.clear();
 		this._androidImeReseed.cancel();
 		this._androidImeTransactionPending = false;
+		this._androidImeInputType = '';
 	}
 
 	_initializeFromTest(textAreaState?: TextAreaState): void {
