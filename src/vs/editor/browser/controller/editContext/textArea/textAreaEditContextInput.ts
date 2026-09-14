@@ -170,6 +170,7 @@ export class TextAreaInput extends Disposable {
 	private _androidImeInputGeneration: number;
 	private _androidImeReseedGeneration: number;
 	private _androidImeTransactionPending: boolean;
+	private _androidImeSelectionUpdating = false;
 	private _androidImeInputType: string;
 
 	constructor(
@@ -530,6 +531,30 @@ export class TextAreaInput extends Disposable {
 			if (this._currentComposition) {
 				return;
 			}
+			// Android keyboards can move only the native caret (spacebar-slide),
+			// including Gecko. Do not wait for typing or reseed during this handoff.
+			if (this._browser.isAndroid && this._textAreaState.androidModelLineNumber !== undefined) {
+				if (this._androidImeTransactionPending || this._androidImeSelectionUpdating || !this._textArea.hasFocus()) {
+					return;
+				}
+				const previousState = this._textAreaState;
+				const projectedState = this._host.getScreenReaderContent();
+				if (projectedState.value !== previousState.value || projectedState.androidModelLineNumber !== previousState.androidModelLineNumber) {
+					return;
+				}
+				const currentState = TextAreaState.readFromTextArea(this._textArea, previousState);
+				const selection = TextAreaState.deduceAndroidImeSelection(previousState, currentState);
+				if (selection) {
+					this._textAreaState = currentState;
+					this._androidImeSelectionUpdating = true;
+					try {
+						this._onSelectionChangeRequest.fire(selection);
+					} finally {
+						this._androidImeSelectionUpdating = false;
+					}
+				}
+				return;
+			}
 			if (!this._browser.isChrome) {
 				// Support only for Chrome until testing happens on other browsers
 				return;
@@ -550,11 +575,6 @@ export class TextAreaInput extends Disposable {
 			if (delta2 < 100) {
 				// received a `selectionchange` event within 100ms since we touched the textarea
 				// => ignore it, since we caused it
-				return;
-			}
-
-			if (this._browser.isAndroid && this._textAreaState.androidModelLineNumber !== undefined) {
-				// Native selection is consumed with the next accepted input transaction.
 				return;
 			}
 
@@ -657,6 +677,7 @@ export class TextAreaInput extends Disposable {
 		if (
 			(!this._accessibilityService.isScreenReaderOptimized() && reason === 'render')
 			|| this._currentComposition
+			|| this._androidImeSelectionUpdating
 			|| (this._browser.isAndroid && this._androidImeTransactionPending)
 		) {
 			// Do not write to the text on render unless a screen reader is being used #192278

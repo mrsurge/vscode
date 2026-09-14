@@ -6,6 +6,7 @@
 import { commonPrefixLength, commonSuffixLength } from '../../../../../base/common/strings.js';
 import { Position } from '../../../../common/core/position.js';
 import { Range } from '../../../../common/core/range.js';
+import { Selection } from '../../../../common/core/selection.js';
 import { ISimpleScreenReaderContentState } from '../screenReaderUtils.js';
 
 export const _debugComposition = false;
@@ -263,6 +264,25 @@ export class TextAreaState {
 			replaceNextCharCnt: previousValue.length - previousSelectionEnd,
 			positionDelta: currentSelectionEnd - currentValue.length
 		};
+	}
+
+	// Selection-only IME gestures use the same guarded line as text edits, but
+	// must not manufacture an edit or allow the prefix/suffix into model columns.
+	public static deduceAndroidImeSelection(previousState: TextAreaState, currentState: TextAreaState): Selection | null {
+		const line = previousState.androidModelLineNumber;
+		if (line === undefined || currentState.androidModelLineNumber !== line
+			|| previousState.value !== currentState.value
+			|| !TextAreaState._readAndroidImeLineProjection(currentState)
+			|| (previousState.selectionStart === currentState.selectionStart && previousState.selectionEnd === currentState.selectionEnd)) {
+			return null;
+		}
+		const start = ANDROID_IME_LINE_PREFIX.length;
+		const end = currentState.value.length - ANDROID_IME_LINE_SUFFIX.length;
+		if (currentState.selectionStart < start || currentState.selectionStart > end
+			|| currentState.selectionEnd < start || currentState.selectionEnd > end) {
+			return null;
+		}
+		return new Selection(line, currentState.selectionStart - start + 1, line, currentState.selectionEnd - start + 1);
 	}
 
 	public static deduceAndroidImeLineEdit(previousState: TextAreaState, currentState: TextAreaState): IAndroidImeLineEditData | null {
