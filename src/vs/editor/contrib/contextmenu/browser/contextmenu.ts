@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as dom from '../../../../base/browser/dom.js';
+import { EventType as TouchEventType } from '../../../../base/browser/touch.js';
 import { IKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { IMouseEvent, IMouseWheelEvent } from '../../../../base/browser/mouseEvent.js';
 import { ActionViewItem } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
@@ -79,6 +80,11 @@ export class ContextMenuController implements IEditorContribution {
 	}
 
 	private _onContextMenu(e: IEditorMouseEvent): void {
+		// The source touch handler already selected the held word. Consumers may
+		// show touch controls, but desktop context-menu focus must not summon the IME.
+		if (e.event.browserEvent.type === TouchEventType.Hold) {
+			return;
+		}
 		if (!this._editor.hasModel()) {
 			return;
 		}

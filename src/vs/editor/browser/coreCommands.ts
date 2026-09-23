@@ -648,6 +648,34 @@ export namespace CoreNavigationCommands {
 
 	export const CursorMove: CursorMoveImpl = registerEditorCommand(new CursorMoveImpl());
 
+	// TE2 uses paragraph navigation for Ctrl+vertical arrows. Both hardware and
+	// projected mobile keys reuse the native blank-line movement/selection engine.
+	for (const [suffix, direction, key] of [
+		['Up', CursorMove_.RawDirection.PrevBlankLine, KeyCode.UpArrow],
+		['Down', CursorMove_.RawDirection.NextBlankLine, KeyCode.DownArrow]
+	] as const) {
+		for (const select of [false, true]) {
+			registerEditorCommand(new class extends CoreEditorCommand<BaseCommandOptions> {
+				constructor() {
+					const modifiers = select ? KeyMod.Shift : 0;
+					super({
+						id: `cursorParagraph${suffix}${select ? 'Select' : ''}`,
+						precondition: undefined,
+						kbOpts: {
+							weight: CORE_WEIGHT + 1,
+							kbExpr: EditorContextKeys.textInputFocus,
+							primary: KeyMod.CtrlCmd | modifiers | key,
+							mac: { primary: KeyMod.WinCtrl | modifiers | key }
+						}
+					});
+				}
+				runCoreEditorCommand(viewModel: IViewModel, args: Partial<BaseCommandOptions>): void {
+					CursorMove.runCoreEditorCommand(viewModel, { to: direction, select, source: args.source });
+				}
+			});
+		}
+	}
+
 	const enum Constants {
 		PAGE_SIZE_MARKER = -1
 	}
