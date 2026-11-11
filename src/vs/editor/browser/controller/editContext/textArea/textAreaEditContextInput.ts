@@ -433,11 +433,15 @@ export class TextAreaInput extends Disposable {
 			if (this._browser.isAndroid) {
 				this._flushAndroidImeInput();
 				this._cancelAndroidImeTransaction();
-				this.writeNativeTextAreaContent('android blur');
 			} else if (endedComposition) {
 				this.writeNativeTextAreaContent('blurWithoutCompositionEnd');
 			}
 			this._setHasFocus(false);
+			if (this._browser.isAndroid) {
+				// A focused-state write selects and refocuses the textarea. Finish
+				// losing focus before reseeding, or switching editors takes two taps.
+				this.writeNativeTextAreaContent('android blur');
+			}
 		}));
 		this._register(this._textArea.onSyntheticTap(() => {
 			if (this._browser.isAndroid) {
